@@ -1,0 +1,46 @@
+import { Navigate, Route, Routes } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { useAuth } from './features/auth/AuthContext';
+import { Shell } from './components/Shell';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import AdminDashboardPage from './pages/AdminDashboardPage';
+import GroupsPage from './pages/GroupsPage';
+import GroupPage from './pages/GroupPage';
+import LessonBuilderPage from './pages/LessonBuilderPage';
+import StudentHomePage from './pages/StudentHomePage';
+import StudentLessonPage from './pages/StudentLessonPage';
+import OfflinePage from './pages/OfflinePage';
+import DiagnosticsPage from './pages/DiagnosticsPage';
+import NotFoundPage from './pages/NotFoundPage';
+
+function Protected({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+  if (loading) return <div className="loading-screen"><div className="loading-brand"><div className="brand-mark">भा</div><strong>Loading BhashaSaathi</strong><span>Preparing your classroom workspace…</span></div></div>;
+  return user ? <Shell>{children}</Shell> : <Navigate to="/login" replace />;
+}
+
+function Role({ role, children }: { role: 'admin' | 'student'; children: ReactNode }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.account_role === role) return <>{children}</>;
+  return <Navigate to={user.account_role === 'admin' ? '/dashboard' : '/student'} replace />;
+}
+
+export default function App() {
+  return <Routes>
+    <Route path="/login" element={<LoginPage />} />
+    <Route path="/register" element={<RegisterPage />} />
+    <Route path="/" element={<Navigate to="/login" replace />} />
+    <Route path="/dashboard" element={<Protected><Role role="admin"><AdminDashboardPage /></Role></Protected>} />
+    <Route path="/groups" element={<Protected><GroupsPage /></Protected>} />
+    <Route path="/groups/:id" element={<Protected><GroupPage /></Protected>} />
+    <Route path="/lessons/:id/builder" element={<Protected><Role role="admin"><LessonBuilderPage /></Role></Protected>} />
+    <Route path="/student" element={<Protected><Role role="student"><StudentHomePage /></Role></Protected>} />
+    <Route path="/student/lessons/:id" element={<Protected><Role role="student"><StudentLessonPage /></Role></Protected>} />
+    <Route path="/practice/:id" element={<Protected><Role role="student"><StudentLessonPage /></Role></Protected>} />
+    <Route path="/offline" element={<Protected><OfflinePage /></Protected>} />
+    <Route path="/diagnostics" element={<Protected><Role role="admin"><DiagnosticsPage /></Role></Protected>} />
+    <Route path="*" element={<NotFoundPage />} />
+  </Routes>;
+}

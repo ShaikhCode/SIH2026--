@@ -1,0 +1,51 @@
+BHASHASAATHI FINAL COPY INSTRUCTIONS
+
+1) Keep your existing folder:
+   D:\git\BhashaSaathi_Local_NoDocker
+
+2) Before copying, STOP FastAPI/Vite terminals.
+
+3) Extract this final ZIP somewhere temporary.
+
+4) Copy EVERYTHING from the extracted BhashaSaathi_FINAL folder into:
+   D:\git\BhashaSaathi_Local_NoDocker
+
+5) Replace code files when Windows asks.
+
+6) DO NOT delete/replace:
+   apps\api\.venv\
+   apps\api\models\
+   apps\api\.env
+
+   Your model weights stay exactly where they are.
+
+7) Start backend:
+   cd D:\git\BhashaSaathi_Local_NoDocker\apps\api
+   .\.venv\Scripts\activate
+   pip install -r requirements.txt
+   python ..\..\scripts\reset_local_db.py
+   alembic upgrade head
+   python ..\..\scripts\seed_demo.py
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+8) New terminal for frontend:
+   cd D:\git\BhashaSaathi_Local_NoDocker\apps\web
+   npm install
+   npm run dev
+
+9) Open:
+   http://localhost:5173
+
+10) Demo teacher:
+   teacher@bhashasaathi.local
+   Demo@1234
+
+11) Demo student:
+   student@bhashasaathi.local
+   Demo@1234
+
+12) If TTS support tokenizer is missing:
+   cd D:\git\BhashaSaathi_Local_NoDocker\apps\api
+   python ..\..\scripts\download_tts_support.py
+
+The final source fixes the frontend [object Object] error display, local .local demo-email rejection, offline attempt queue marking, actual offline attempt processing, cached audio playback, published worksheet metadata, concept flashcards, and the missing frontend product screens.

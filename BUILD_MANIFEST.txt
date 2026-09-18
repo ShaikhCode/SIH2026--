@@ -1,0 +1,48 @@
+BhashaSaathi FINAL — Local No-Docker Build
+Build date: 2026-09-17
+
+WHAT IS INCLUDED
+- React/Vite TypeScript frontend
+- FastAPI + SQLAlchemy + Alembic backend
+- Pure Layer 2 text-intelligence package
+- IndicTrans2 / faster-whisper / Indic Parler-TTS adapters
+- Authentication + roles + groups
+- Lesson builder + STT transcript editing
+- Concepts + learning outcome metadata
+- Translation Guard + teacher review/approval
+- TTS artifact caching
+- Worksheet HTML + offline flashcard data
+- Practice + concept evaluation
+- Publish + version history + rollback
+- IndexedDB offline lesson cache
+- Offline attempt queue + server-side sync processing
+- Diagnostics + model health
+- Seed/demo scripts
+
+MODEL WEIGHTS
+Not included. The existing apps/api/models/ folder is intentionally preserved by the copy instructions.
+
+VALIDATION PERFORMED IN BUILD SANDBOX
+- Python compileall: PASS
+- Clean Alembic migration: PASS
+- Demo seed: PASS
+- Backend TestClient login/group/lesson/analyze/practice/publish/student-package/sync flow: PASS
+- Published worksheet + flashcard pack fields: PASS
+- Published-lesson version creation behavior: PASS
+- Frontend TS/TSX transpile/syntax validation: PASS
+
+NOT RUN IN BUILD SANDBOX
+- Real local IndicTrans2 inference (user model weights are on Windows and not mounted here)
+- Real local Whisper inference
+- Real local Parler-TTS inference
+- Full npm install / Vite production build: npm registry was unreachable in the sandbox
+
+USER-SIDE FINAL CHECK
+After copying the ZIP over the existing folder, run:
+1. python ..\..\scripts\verify_models.py
+2. python ..\..\scripts\reset_local_db.py
+3. alembic upgrade head
+4. python ..\..\scripts\seed_demo.py
+5. uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+6. npm install
+7. npm run dev
