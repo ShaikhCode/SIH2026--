@@ -6,7 +6,7 @@ interface ContextValue {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<User>;
-  register: (body: { name: string; email: string; password: string; preferred_language: any; account_role: 'admin' | 'student' }) => Promise<User>;
+  register: (body: { name: string; email: string; password: string }) => Promise<User>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }

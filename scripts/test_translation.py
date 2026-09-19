@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Direct local IndicTrans2 smoke test")
     parser.add_argument("--text", default="पौधों को जीवित रहने और बढ़ने के लिए पानी की आवश्यकता होती है।")
     parser.add_argument("--src", default="hin_Deva")
-    parser.add_argument("--tgt", default="sat_Olck")
+    parser.add_argument("--tgt", default="mar_Deva")
     args = parser.parse_args()
 
     adapter = IndicTrans2Adapter(MODELS_ROOT, settings.cpu_only)

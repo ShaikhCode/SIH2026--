@@ -32,8 +32,6 @@ def package(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_
 
 @router.post('/attempts')
 def attempt(x: AttemptIn, db: Session = Depends(get_db), user=Depends(current_user)):
-    if user.account_role == 'admin':
-        raise HTTPException(403, detail={'code': 'STUDENT_ONLY', 'message': 'Practice submissions are for student accounts.'})
     lesson = db.get(Lesson, x.lesson_id)
     if not lesson or lesson.status != 'PUBLISHED':
         raise HTTPException(404, detail={'code': 'LESSON_NOT_FOUND', 'message': 'Published lesson not found.'})

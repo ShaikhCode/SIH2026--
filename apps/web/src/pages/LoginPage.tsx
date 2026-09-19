@@ -18,7 +18,7 @@ export default function LoginPage() {
     setError(''); setBusy(true);
     try {
       const user = await login(email, password);
-      navigate(user.account_role === 'admin' ? '/dashboard' : '/student', { replace: true });
+      navigate('/dashboard', { replace: true });
     } catch (err) {
       setError(errorMessage(err));
     } finally { setBusy(false); }
@@ -31,7 +31,7 @@ export default function LoginPage() {
         <div className="auth-kicker">LOCAL • TEACHER-FIRST • OFFLINE READY</div>
         <h1>One teaching input.<br /><em>One learner-ready lesson.</em></h1>
         <p>Turn a Hindi teaching moment into a structured, reviewed, multilingual classroom experience without handing the final decision to the AI.</p>
-        <div className="story-points"><div><CheckCircle2 /><span>Teacher-controlled publishing</span></div><div><Languages /><span>Hindi · English · Santhali / Ol Chiki</span></div><div><WifiOff /><span>Published lessons keep working offline</span></div></div>
+        <div className="story-points"><div><CheckCircle2 /><span>Teacher-controlled publishing</span></div><div><Languages /><span>Hindi · English · Marathi / Devanagari</span></div><div><WifiOff /><span>Published lessons keep working offline</span></div></div>
       </div>
       <div className="auth-foot">BhashaSaathi · SIH26042 prototype</div>
     </section>
@@ -45,7 +45,7 @@ export default function LoginPage() {
         <Button type="submit" disabled={busy} className="full">{busy ? 'Signing in…' : 'Sign in'}</Button>
       </form>
       <div className="demo-box"><strong>Demo access</strong><span>Teacher: <b>teacher@bhashasaathi.local</b></span><span>Password: <b>Demo@1234</b></span></div>
-      <div className="auth-switch"><span>New to BhashaSaathi?</span><button onClick={() => navigate('/register')}>Create a creator or student account →</button></div>
+      <div className="auth-switch"><span>New to BhashaSaathi?</span><button onClick={() => navigate('/register')}>Create your flexible account →</button></div>
       <div className="trust-note"><ShieldCheck size={16} /><span>No paid AI runtime dependency. Your local models stay on your machine.</span></div>
     </Card></section>
   </div>;

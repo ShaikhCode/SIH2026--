@@ -1,18 +1,14 @@
-export type Lang = 'eng_Latn' | 'hin_Deva' | 'sat_Olck';
-export type Role = 'admin' | 'student';
-
+export type Lang = 'eng_Latn' | 'hin_Deva' | 'mar_Deva';
 export const LANGS: Record<Lang, { name: string; native: string; script: string }> = {
   eng_Latn: { name: 'English', native: 'English', script: 'Latin' },
   hin_Deva: { name: 'Hindi', native: 'हिन्दी', script: 'Devanagari' },
-  sat_Olck: { name: 'Santhali', native: 'ᱥᱟᱱᱛᱟᱲᱤ', script: 'Ol Chiki' },
+  mar_Deva: { name: 'Marathi', native: 'मराठी', script: 'Devanagari' },
 };
 
 export interface User {
   id: number;
   name: string;
   email: string;
-  preferred_language: Lang;
-  account_role: Role;
 }
 
 export interface Group {
@@ -22,8 +18,11 @@ export interface Group {
   grade: string;
   subject: string;
   owner_id: number;
+  is_owner: boolean;
+  membership_role: 'owner' | 'admin' | 'student' | null;
   members: number;
   lessons: number;
+  published_lessons?: number;
   created_at: string;
 }
 

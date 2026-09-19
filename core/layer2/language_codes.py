@@ -1,7 +1,7 @@
 LANGUAGES = {
     'eng_Latn': {'name':'English','script':'latin'},
     'hin_Deva': {'name':'हिन्दी','script':'devanagari'},
-    'sat_Olck': {'name':'ᱥᱟᱱᱛᱟᱲᱤ','script':'olchiki'},
+    'mar_Deva': {'name':'मराठी','script':'devanagari'},
 }
 
 def validate_language(code: str) -> None:

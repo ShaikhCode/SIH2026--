@@ -1,12 +1,12 @@
 from .models import Concept
 
-# Santhali terms intentionally remain empty until verified language data is reviewed by a qualified/native reviewer.
+# Curated classroom glossary for the Marathi prototype.
 GLOSSARY = {
-    'water': {'eng_Latn':'water','hin_Deva':'पानी','sat_Olck':''},
-    'plants': {'eng_Latn':'plants','hin_Deva':'पौधे','sat_Olck':''},
-    'growth': {'eng_Latn':'growth','hin_Deva':'विकास','sat_Olck':''},
-    'need': {'eng_Latn':'need','hin_Deva':'आवश्यकता','sat_Olck':''},
-    'sunlight': {'eng_Latn':'sunlight','hin_Deva':'सूरज की रोशनी','sat_Olck':''},
+    'water': {'eng_Latn':'water','hin_Deva':'पानी','mar_Deva':'पाणी'},
+    'plants': {'eng_Latn':'plants','hin_Deva':'पौधे','mar_Deva':'झाडे'},
+    'growth': {'eng_Latn':'growth','hin_Deva':'विकास','mar_Deva':'वाढ'},
+    'need': {'eng_Latn':'need','hin_Deva':'आवश्यकता','mar_Deva':'गरज'},
+    'sunlight': {'eng_Latn':'sunlight','hin_Deva':'सूरज की रोशनी','mar_Deva':'सूर्यप्रकाश'},
 }
 
 def preferred_term(concept_id: str, language: str) -> str:

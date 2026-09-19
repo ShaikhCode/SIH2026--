@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ...adapters.translation import IndicTrans2Adapter
 from ...core.config import STORAGE_ROOT, settings
-from ...core.security import current_user, require_admin
+from ...core.security import current_user
 from ...db import get_db
 from ...layer2.service import Layer2Engine
 from ...models import Artifact, Group, Lesson, LessonVersion, Membership, PracticeQuestion, Translation
@@ -62,7 +62,7 @@ def can_read_lesson(db: Session, lesson: Lesson, user) -> bool:
     group = db.get(Group, lesson.group_id)
     if not group:
         return False
-    if user.account_role == 'admin' and group.owner_id == user.id:
+    if group.owner_id == user.id:
         return True
     return bool(db.query(Membership).filter_by(group_id=lesson.group_id, user_id=user.id).first()) and lesson.status == 'PUBLISHED'
 
@@ -170,7 +170,7 @@ def concept_rows(values: list[str]) -> list[dict]:
 
 
 @router.post('/groups/{group_id}/lessons')
-def create_lesson(group_id: int, x: LessonCreateIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def create_lesson(group_id: int, x: LessonCreateIn, db: Session = Depends(get_db), user=Depends(current_user)):
     group = db.get(Group, group_id)
     if not group:
         raise HTTPException(404, detail={'code': 'GROUP_NOT_FOUND', 'message': 'Classroom not found.'})
@@ -227,16 +227,16 @@ def get_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(curre
     lesson = db_lesson(db, lesson_id)
     if not can_read_lesson(db, lesson, user):
         raise HTTPException(403, detail={'code': 'LESSON_ACCESS_DENIED', 'message': 'This lesson is not available to your account.'})
-    include_pending = user.account_role == 'admin'
+    include_pending = bool(db.query(Group).filter_by(id=lesson.group_id, owner_id=user.id).first())
     return pack(db, lesson, include_pending=include_pending)
 
 
 @router.patch('/lessons/{lesson_id}')
-def patch_lesson(lesson_id: int, x: LessonPatchIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def patch_lesson(lesson_id: int, x: LessonPatchIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
-    changes_requested = any(value is not None for value in (x.source_text, x.clean_transcript, x.learning_outcome, x.concepts)) or x.title is not None or x.topic is not None
+    changes_requested = any(value is not None for value in (x.source_text, x.clean_transcript, x.learning_outcome, x.concepts, x.source_language)) or x.title is not None or x.topic is not None
 
     if lesson.status == 'PUBLISHED' and changes_requested:
         outcome = [x.learning_outcome] if x.learning_outcome is not None else json.loads(version.learning_objectives_json or '[]')
@@ -258,13 +258,35 @@ def patch_lesson(lesson_id: int, x: LessonPatchIn, db: Session = Depends(get_db)
             lesson.title = x.title.strip()
         if x.topic is not None:
             lesson.topic = x.topic.strip()
+        if x.source_language is not None:
+            lesson.source_language = x.source_language
         db.commit()
         return pack(db, lesson, include_pending=True)
+
+    existing_outcome = json.loads(version.learning_objectives_json or '[]')
+    existing_concepts = json.loads(version.concepts_json or '[]')
+    incoming_concepts = concept_rows(x.concepts) if x.concepts is not None else existing_concepts
+    incoming_outcome = [x.learning_outcome.strip()] if x.learning_outcome is not None and x.learning_outcome.strip() else ([] if x.learning_outcome is not None else existing_outcome)
+    source_changed = (
+        (x.source_text is not None and x.source_text != version.source_text)
+        or (x.clean_transcript is not None and x.clean_transcript != version.clean_transcript)
+        or (x.source_language is not None and x.source_language != lesson.source_language)
+        or (x.learning_outcome is not None and incoming_outcome != existing_outcome)
+        or (x.concepts is not None and incoming_concepts != existing_concepts)
+    )
+    if source_changed:
+        # Generated translations, practice and audio belong to the exact active source/version.
+        # If the educator changes source meaning, never leave stale learner-facing artifacts behind.
+        db.query(Translation).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(Artifact).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(PracticeQuestion).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
 
     if x.title is not None:
         lesson.title = x.title.strip()
     if x.topic is not None:
         lesson.topic = x.topic.strip()
+    if x.source_language is not None:
+        lesson.source_language = x.source_language
     if x.source_text is not None:
         version.source_text = x.source_text
     if x.clean_transcript is not None:
@@ -280,7 +302,7 @@ def patch_lesson(lesson_id: int, x: LessonPatchIn, db: Session = Depends(get_db)
 
 
 @router.delete('/lessons/{lesson_id}')
-def delete_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+def delete_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     versions = db.query(LessonVersion).filter_by(lesson_id=lesson.id).all()
@@ -297,7 +319,7 @@ def delete_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(re
 
 
 @router.post('/lessons/{lesson_id}/versions')
-def new_version(lesson_id: int, x: VersionCreateIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def new_version(lesson_id: int, x: VersionCreateIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     previous = current_version(db, lesson)
@@ -338,7 +360,7 @@ def versions(lesson_id: int, db: Session = Depends(get_db), user=Depends(current
 
 
 @router.post('/lessons/{lesson_id}/rollback')
-def rollback(lesson_id: int, version_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+def rollback(lesson_id: int, version_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = db.get(LessonVersion, version_id)
@@ -351,7 +373,7 @@ def rollback(lesson_id: int, version_id: int, db: Session = Depends(get_db), use
 
 
 @router.post('/lessons/{lesson_id}/analyze')
-def analyze(lesson_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+def analyze(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -370,7 +392,7 @@ def analyze(lesson_id: int, db: Session = Depends(get_db), user=Depends(require_
 
 
 @router.post('/lessons/{lesson_id}/translate')
-def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -414,7 +436,7 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
     row.validation_json = json.dumps(validation, ensure_ascii=False)
     row.verification_status = 'UNVERIFIED'
     row.teacher_edited = False
-    row.native_review_status = 'PENDING' if x.target_language == 'sat_Olck' else 'NOT_REVIEWED'
+    row.native_review_status = 'NOT_REVIEWED'
     lesson.status = 'FLAGGED' if validation['flags'] else 'TRANSLATED'
     db.commit()
     db.refresh(row)
@@ -430,7 +452,7 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
 
 
 @router.post('/lessons/{lesson_id}/verify-translation')
-def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -458,8 +480,7 @@ def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db
         translation.validation_json = json.dumps(validation, ensure_ascii=False)
     if x.native_review_status is not None:
         translation.native_review_status = x.native_review_status
-    elif translation.target_language == 'sat_Olck' and translation.native_review_status == 'NOT_REVIEWED':
-        translation.native_review_status = 'PENDING'
+
     translation.verification_status = 'TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'
     lesson.status = 'TEACHER_APPROVED' if x.approved else 'FLAGGED'
     db.commit()
@@ -467,16 +488,16 @@ def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db
 
 
 @router.post('/lessons/{lesson_id}/generate-practice')
-def generate_practice(lesson_id: int, x: PracticeGenerateIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def generate_practice(lesson_id: int, x: PracticeGenerateIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
-    rows = ensure_practice(db, version, x.language, x.count, approved=False, translate_fn=manager.translate)
+    rows = ensure_practice(db=db, version=version, language=x.language, source_language=lesson.source_language, count=x.count, approved=False, translate_fn=manager.translate)
     return [_practice_view(q) for q in rows]
 
 
 @router.post('/lessons/{lesson_id}/practice/{question_id}/approve')
-def approve_practice(lesson_id: int, question_id: int, x: PracticeApprovalIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def approve_practice(lesson_id: int, question_id: int, x: PracticeApprovalIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -489,7 +510,7 @@ def approve_practice(lesson_id: int, question_id: int, x: PracticeApprovalIn, db
 
 
 @router.post('/lessons/{lesson_id}/generate-worksheet')
-def generate_worksheet(lesson_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+def generate_worksheet(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -498,16 +519,16 @@ def generate_worksheet(lesson_id: int, db: Session = Depends(get_db), user=Depen
 
 
 @router.post('/lessons/{lesson_id}/generate-flashcards')
-def generate_flashcards(lesson_id: int, x: FlashcardIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def generate_flashcards(lesson_id: int, x: FlashcardIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
     translations = db.query(Translation).filter_by(lesson_version_id=version.id).all()
-    return make_flashcards(lesson, version, translations, (x.language, 'eng_Latn', 'sat_Olck'))
+    return make_flashcards(lesson, version, translations, (x.language, 'eng_Latn', 'mar_Deva'))
 
 
 @router.post('/lessons/{lesson_id}/transcribe')
-async def transcribe(lesson_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(require_admin)):
+async def transcribe(lesson_id: int, file: UploadFile = File(...), db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     if not settings.stt_enabled:
@@ -524,7 +545,7 @@ async def transcribe(lesson_id: int, file: UploadFile = File(...), db: Session =
     path = folder / (secrets.token_hex(12) + suffix)
     path.write_bytes(data)
     try:
-        stt_language = {'hin_Deva': 'hi', 'eng_Latn': 'en', 'sat_Olck': None}.get(lesson.source_language)
+        stt_language = {'hin_Deva': 'hi', 'eng_Latn': 'en', 'mar_Deva': None}.get(lesson.source_language)
         result = manager.transcribe(path, stt_language)
     except Exception as exc:
         logger.exception('STT failed lesson_id=%s', lesson_id)
@@ -536,7 +557,7 @@ async def transcribe(lesson_id: int, file: UploadFile = File(...), db: Session =
 
 
 @router.post('/lessons/{lesson_id}/tts')
-def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(require_admin)):
+def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     if not settings.tts_enabled:
@@ -574,7 +595,7 @@ def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(re
 
 
 @router.post('/lessons/{lesson_id}/publish')
-def do_publish(lesson_id: int, db: Session = Depends(get_db), user=Depends(require_admin)):
+def do_publish(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)

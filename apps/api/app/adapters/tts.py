@@ -11,7 +11,7 @@ import torch
 LANGUAGE_DESCRIPTIONS = {
     'eng_Latn': 'English',
     'hin_Deva': 'Hindi',
-    'sat_Olck': 'Santali',
+    'mar_Deva': 'Marathi',
 }
 
 

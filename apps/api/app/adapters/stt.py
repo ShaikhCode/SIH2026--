@@ -9,9 +9,9 @@ import torch
 LANGUAGE_TO_WHISPER = {
     'hin_Deva': 'hi',
     'eng_Latn': 'en',
-    # Santhali ASR is not claimed as verified by the MVP. None lets Whisper
+    # Marathi ASR is not claimed as verified by the MVP. None lets Whisper
     # detect it while still preserving the explicit limitation in the UI.
-    'sat_Olck': None,
+    'mar_Deva': 'mr',
 }
 
 

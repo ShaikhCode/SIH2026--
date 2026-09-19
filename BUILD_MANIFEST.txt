@@ -2,7 +2,7 @@ BHASHASAATHI FINAL AUDITED BUILD MANIFEST
 
 Release: final-audited-local-nodocker
 Architecture: React/Vite + FastAPI + Layer2 + SQLite + IndexedDB/PWA
-Primary demo path: Hindi -> Santhali (Ol Chiki)
+Primary demo path: Hindi -> Marathi (Devanagari)
 Secondary: English
 
 WEB
@@ -13,10 +13,10 @@ WEB
 - Lesson builder with state-gated steps
 - Source editor + mic/upload STT
 - Understand/concepts editor
-- English + Santhali generation
+- English + Marathi generation
 - Translation Guard
 - Teacher translation approval
-- Santhali native-review separation
+- Marathi native-review separation
 - Practice draft generation + approval
 - In-app worksheet preview/print
 - Flashcards

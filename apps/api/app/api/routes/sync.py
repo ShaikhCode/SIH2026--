@@ -73,7 +73,7 @@ def push(x: SyncPushIn, db: Session = Depends(get_db), user=Depends(current_user
         if not existing:
             db.add(row)
         accepted += 1
-        if operation == 'ATTEMPT_UPSERT' and user.account_role == 'student':
+        if operation == 'ATTEMPT_UPSERT':
             try:
                 with db.begin_nested():
                     ok, reason = process_attempt(db, user, op.get('payload') or {})

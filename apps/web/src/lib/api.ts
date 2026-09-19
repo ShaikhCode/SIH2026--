@@ -95,7 +95,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
     }),
-  register: (body: { name: string; email: string; password: string; preferred_language: Lang; account_role: 'admin' | 'student' }) =>
+  register: (body: { name: string; email: string; password: string }) =>
     request<{ access_token: string; user: User }>('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ ...body, email: body.email.trim().toLowerCase() }),

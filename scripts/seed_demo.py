@@ -12,7 +12,7 @@ try:
         teacher=User(name='Demo Teacher',email='teacher@bhashasaathi.local',password_hash=hash_password('Demo@1234'),preferred_language='hin_Deva',account_role='admin'); db.add(teacher); db.flush()
     student=db.query(User).filter_by(email='student@bhashasaathi.local').first()
     if not student:
-        student=User(name='Demo Student',email='student@bhashasaathi.local',password_hash=hash_password('Demo@1234'),preferred_language='sat_Olck',account_role='student'); db.add(student); db.flush()
+        student=User(name='Demo Student',email='student@bhashasaathi.local',password_hash=hash_password('Demo@1234'),preferred_language='mar_Deva',account_role='student'); db.add(student); db.flush()
     group=db.query(Group).filter_by(name='Demo Primary Classroom',owner_id=teacher.id).first()
     if not group:
         import secrets,string

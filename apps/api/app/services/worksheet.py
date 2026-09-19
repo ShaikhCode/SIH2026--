@@ -5,14 +5,17 @@ def _translation_map(translations):
     return {t.target_language: t.translated_text for t in (translations or [])}
 
 
-def make_worksheet(lesson, version, translations=None, language_a='hin_Deva', language_b='sat_Olck'):
+def make_worksheet(lesson, version, translations=None, language_a=None, language_b=None):
     concepts = json.loads(version.concepts_json or '[]')
     outcome_list = json.loads(version.learning_objectives_json or '[]')
     outcome = outcome_list[0] if outcome_list else ''
     texts = _translation_map(translations)
     source = version.clean_transcript or version.source_text
+    language_a = language_a or lesson.source_language
+    targets = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva') if lang != language_a]
+    language_b = language_b or (targets[0] if targets else 'eng_Latn')
     target = texts.get(language_b, 'Translation not prepared yet.')
-    english = texts.get('eng_Latn', 'Translation not prepared yet.')
+    english = texts.get('eng_Latn', source if lesson.source_language == 'eng_Latn' else 'Translation not prepared yet.')
     title = html.escape(lesson.title)
 
     vocab = ''.join(
@@ -28,8 +31,8 @@ def make_worksheet(lesson, version, translations=None, language_a='hin_Deva', la
     <h1>{title}</h1><p><strong>Learning outcome:</strong> {html.escape(outcome)}</p>
     <div class="box"><h2>Vocabulary / शब्दावली</h2><ul>{vocab}</ul></div>
     <div class="box"><h2>Read & understand</h2><div class="grid">
-      <div><div class="label">Hindi</div><p>{html.escape(source)}</p></div>
-      <div><div class="label">Santhali</div><p>{html.escape(target)}</p></div>
+      <div><div class="label">{html.escape(language_a)}</div><p>{html.escape(source)}</p></div>
+      <div><div class="label">{html.escape(language_b)}</div><p>{html.escape(target)}</p></div>
     </div></div>
     <div class="box"><h2>English support</h2><p>{html.escape(english)}</p></div>
     <div class="box"><h2>Practice / अभ्यास</h2><ol>
@@ -47,7 +50,7 @@ def make_worksheet(lesson, version, translations=None, language_a='hin_Deva', la
     }
 
 
-def make_flashcards(lesson, version, translations=None, languages=('hin_Deva', 'eng_Latn', 'sat_Olck')):
+def make_flashcards(lesson, version, translations=None, languages=('hin_Deva', 'eng_Latn', 'mar_Deva')):
     concepts = json.loads(version.concepts_json or '[]')
     texts = _translation_map(translations)
     return [
@@ -59,7 +62,7 @@ def make_flashcards(lesson, version, translations=None, languages=('hin_Deva', '
             'language_labels': {
                 'hin_Deva': c.get('label') if 'hin_Deva' in languages else None,
                 'eng_Latn': c.get('label') if 'eng_Latn' in languages else None,
-                'sat_Olck': texts.get('sat_Olck') if 'sat_Olck' in languages else None,
+                'mar_Deva': texts.get('mar_Deva') if 'mar_Deva' in languages else None,
             },
             'languages': list(languages),
         }

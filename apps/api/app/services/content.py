@@ -56,8 +56,8 @@ def analyze_source(text: str, grade: str, subject: str, topic: str = '') -> dict
 def _base_question(concept_label: str, language: str) -> tuple[str, list[str], str, str]:
     """Return a deterministic source-language question template.
 
-    Santhali is deliberately NOT hard-coded here. When target language is
-    Santhali, the route translates this template with the local model before
+    Marathi is deliberately NOT hard-coded here. When target language is
+    Marathi, the route translates this template with the local model before
     saving it as a draft, so unverified AI output never becomes an approved
     translation automatically.
     """
@@ -74,6 +74,7 @@ def ensure_practice(
     db: Session,
     version: LessonVersion,
     language: str = 'hin_Deva',
+    source_language: str = 'hin_Deva',
     count: int = 4,
     approved: bool = False,
     translate_fn: Callable[[str, str, str], str] | None = None,
@@ -87,23 +88,28 @@ def ensure_practice(
     for concept in concepts[:count]:
         cid = concept.get('concept_id', concept.get('label', 'main_idea'))
         label = concept.get('label', cid)
-        source_prompt, options, correct, explanation = _base_question(label, 'hin_Deva' if language == 'hin_Deva' else 'eng_Latn')
-        prompt = source_prompt
-        translated_options = options
-        translated_explanation = explanation
-
-        if language == 'sat_Olck':
+        # Build a canonical English question first, then render it in the requested
+        # learner language. This prevents English/Marathi/Hindi questions from
+        # accidentally embedding a concept label in the teacher's source language.
+        source_prompt, options, _, explanation = _base_question(label, 'eng_Latn')
+        target_label = label
+        if translate_fn is not None and source_language != 'eng_Latn':
+            target_label = translate_fn(label, source_language, 'eng_Latn')
+        english_prompt = f'Why is “{target_label}” important in this lesson?'
+        english_options = [target_label, 'It is unrelated to the lesson', 'I am not sure']
+        if language == 'eng_Latn':
+            prompt, translated_options, correct, translated_explanation = english_prompt, english_options, target_label, explanation
+        else:
             if translate_fn is None:
-                raise RuntimeError('A local translation function is required to draft Santhali practice.')
-            prompt = translate_fn(source_prompt, 'eng_Latn', 'sat_Olck')
-            target_label = translate_fn(label, 'eng_Latn', 'sat_Olck')
+                raise RuntimeError('A local translation function is required to draft non-English practice.')
+            prompt = translate_fn(english_prompt, 'eng_Latn', language)
             translated_options = [
-                target_label,
-                translate_fn(options[1], 'eng_Latn', 'sat_Olck'),
-                translate_fn(options[2], 'eng_Latn', 'sat_Olck'),
+                translate_fn(english_options[0], 'eng_Latn', language),
+                translate_fn(english_options[1], 'eng_Latn', language),
+                translate_fn(english_options[2], 'eng_Latn', language),
             ]
-            correct = target_label
-            translated_explanation = translate_fn(explanation, 'eng_Latn', 'sat_Olck')
+            correct = translated_options[0]
+            translated_explanation = translate_fn(explanation, 'eng_Latn', language)
 
         rows.append(PracticeQuestion(
             lesson_version_id=version.id,

@@ -25,7 +25,7 @@ The diagnostic report establishes:
 5. A first-class `scripts/download_tts_support.py` provisions only FLAN-T5 tokenizer/config assets.
 6. `scripts/model_lab.py` isolates translation, STT and TTS before product integration.
 7. The API `/health/models` reports individual TTS support readiness instead of reporting the model folder alone as “ready”.
-8. The lesson builder blocks publishing until the required Santhali audio artifact exists.
+8. The lesson builder blocks publishing until the required Marathi audio artifact exists.
 9. Model errors preserve the lesson and expose a useful local runtime detail to the educator UI.
 
 ## Important non-fixes
@@ -33,7 +33,7 @@ The diagnostic report establishes:
 - Do not rename Whisper `model.bin`.
 - Do not download the full FLAN-T5 model just to obtain its tokenizer.
 - Do not loosen the pinned Parler/Transformers versions without rerunning isolated model tests.
-- Do not label unreviewed Santhali as native-verified.
+- Do not label unreviewed Marathi as native-verified.
 
 ## Final machine-side proof
 

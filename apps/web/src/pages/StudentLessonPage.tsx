@@ -9,7 +9,7 @@ import { queueAttempt, syncNow } from '../lib/sync';
 import type { Lang, LessonPack } from '../types';
 import { useAuth } from '../features/auth/AuthContext';
 
-const languageName = (lang: Lang) => lang === 'sat_Olck' ? 'ᱥᱟᱱᱛᱟᱲᱤ' : lang === 'eng_Latn' ? 'English' : 'हिन्दी';
+const languageName = (lang: Lang) => lang === 'mar_Deva' ? 'मराठी' : lang === 'eng_Latn' ? 'English' : 'हिन्दी';
 
 export default function StudentLessonPage() {
   const { id } = useParams();
@@ -17,7 +17,7 @@ export default function StudentLessonPage() {
   const { user } = useAuth();
   const { push } = useToast();
   const [pack, setPack] = useState<LessonPack | null>(null);
-  const [language, setLanguage] = useState<Lang>((localStorage.getItem('student_language') as Lang) || user?.preferred_language || 'sat_Olck');
+  const [language, setLanguage] = useState<Lang>((localStorage.getItem('student_language') as Lang) || 'hin_Deva');
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState('');
@@ -25,6 +25,14 @@ export default function StudentLessonPage() {
   const [audioUrls, setAudioUrls] = useState<Record<number, string>>({});
   const [cached, setCached] = useState(false);
   const [audioLoading, setAudioLoading] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!pack) return;
+    const preferred = localStorage.getItem('student_language') as Lang | null;
+    const candidates = [preferred, pack.lesson.source_language, ...pack.translations.map((item) => item.language)].filter(Boolean) as Lang[];
+    const usable = candidates.find((lang) => lang === pack.lesson.source_language || pack.translations.some((item) => item.language === lang));
+    if (usable) setLanguage(usable);
+  }, [pack?.lesson.source_language, pack?.translations.length]);
 
   const load = async () => {
     try {
@@ -123,9 +131,9 @@ export default function StudentLessonPage() {
   }
 
   return <Page eyebrow={`${pack.lesson.grade} · ${pack.lesson.subject}`} title={pack.lesson.title} subtitle={pack.version.learning_objectives[0] || pack.lesson.topic || 'Explore the lesson, then practice the concepts.'} actions={<div className="head-action-row"><Link to="/student"><Button variant="ghost"><ArrowLeft size={16} /> My learning</Button></Link><Button variant="secondary" onClick={() => void download()}><Download size={15} /> {cached ? 'Offline ready' : 'Download offline'}</Button></div>}>
-    <div className="lesson-status-bar"><div>{offline || cached ? <Status tone="warning"><WifiOff size={15} /> {offline ? 'Offline mode' : 'Cached on this device'}</Status> : <Status tone="success"><Wifi size={15} /> Online</Status>}</div><div className="language-switcher">{(['hin_Deva', 'sat_Olck', 'eng_Latn'] as Lang[]).map((lang) => <button key={lang} className={language === lang ? 'selected' : ''} onClick={() => { setLanguage(lang); localStorage.setItem('student_language', lang); setAnswers({}); setResult(null); }}>{languageName(lang)}</button>)}</div></div>
+    <div className="lesson-status-bar"><div>{offline || cached ? <Status tone="warning"><WifiOff size={15} /> {offline ? 'Offline mode' : 'Cached on this device'}</Status> : <Status tone="success"><Wifi size={15} /> Online</Status>}</div><div className="language-switcher">{(['hin_Deva', 'mar_Deva', 'eng_Latn'] as Lang[]).map((lang) => <button key={lang} className={language === lang ? 'selected' : ''} onClick={() => { setLanguage(lang); localStorage.setItem('student_language', lang); setAnswers({}); setResult(null); }}>{languageName(lang)}</button>)}</div></div>
     {error && <Card className="error-card"><Status tone="danger">{error}</Status><button onClick={() => setError('')}>Dismiss</button></Card>}
-    <div className="lesson-main-grid"><Card className="lesson-reader"><div className="reader-kicker"><span>LESSON CONTENT</span>{translation ? <Status tone={translation.verification_status === 'TEACHER_APPROVED' ? 'success' : 'warning'}>{translation.verification_status.replaceAll('_', ' ')}</Status> : <Status>Source language</Status>}</div><div className={`lesson-script ${language === 'sat_Olck' ? 'ol-chiki' : ''}`}>{text || 'This language version has not been prepared for students yet.'}</div>{translation?.flags?.length ? <div className="info-banner warning"><span>Translation Guard</span><p>This version includes review diagnostics. Students only receive published educator-approved content.</p></div> : null}
+    <div className="lesson-main-grid"><Card className="lesson-reader"><div className="reader-kicker"><span>LESSON CONTENT</span>{translation ? <Status tone={translation.verification_status === 'TEACHER_APPROVED' ? 'success' : 'warning'}>{translation.verification_status.replaceAll('_', ' ')}</Status> : <Status>Source language</Status>}</div><div className={`lesson-script ${language === 'mar_Deva' || language === 'hin_Deva' ? 'devanagari' : ''}`}>{text || 'This language version has not been prepared for students yet.'}</div>{translation?.flags?.length ? <div className="info-banner warning"><span>Translation Guard</span><p>This version includes review diagnostics. Students only receive published educator-approved content.</p></div> : null}
       <div className="audio-block"><SectionTitle title="Listen" subtitle="Audio is downloaded with the published lesson package." />{audioArtifacts.length ? <div className="audio-list">{audioArtifacts.map((artifact) => <div className="student-audio" key={artifact.id}><div><Volume2 size={17} /><div><strong>{languageName(language)} audio</strong><span>Cached classroom audio</span></div></div>{audioUrls[artifact.id] ? <audio controls autoPlay={false} src={audioUrls[artifact.id]} /> : <Button variant="secondary" onClick={() => void loadAudio(artifact.id)} disabled={audioLoading === artifact.id}>{audioLoading === artifact.id ? 'Loading…' : <><Play size={15} /> Load audio</>}</Button>}</div>)}</div> : <Status tone="warning">Audio has not been prepared for this language yet.</Status>}</div></Card>
       <Card className="lesson-side-card"><SectionTitle title="Learning at a glance" /><div className="concept-chip-list">{pack.version.concepts.map((concept) => <span key={concept.concept_id}>{concept.label}</span>)}</div><div className="side-rule" /><div className="side-info"><Headphones size={17} /><div><strong>Listen</strong><span>Play cached audio whenever it is available.</span></div></div><div className="side-info"><Download size={17} /><div><strong>Offline</strong><span>Download once, then continue without internet.</span></div></div></Card></div>
     <Card><SectionTitle title="Practice your understanding" subtitle="Answer the educator-approved questions. Your score is based on the concept checks prepared for this lesson." />{questions.length === 0 ? <Status tone="warning">Practice has not been approved in {languageName(language)} yet.</Status> : <><div className="practice-list">{questions.map((question, index) => <div className="practice-card" key={question.id}><div className="practice-number">{String(index + 1).padStart(2, '0')}</div><div className="practice-body"><strong>{question.prompt}</strong><div className="option-list">{question.options.map((option) => <label key={option} className={answers[String(question.id)] === option ? 'option selected' : 'option'}><input type="radio" name={`question-${question.id}`} checked={answers[String(question.id)] === option} onChange={() => setAnswers((old) => ({ ...old, [String(question.id)]: option }))} /><span>{option}</span></label>)}</div></div></div>)}</div><div className="practice-submit"><Button onClick={() => void submit()} disabled={questions.some((question) => !answers[String(question.id)])}><CheckCircle2 size={16} /> {offline ? 'Save offline answer' : 'Submit answers'}</Button>{result?.pending && <Status tone="warning">Saved locally · waiting for sync</Status>}{result && result.score !== null && <div className="score-box"><strong>{result.score}%</strong><span>Concept understanding</span></div>}</div></>}</Card>

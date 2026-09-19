@@ -1,15 +1,13 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
-LanguageCode = Literal['eng_Latn', 'hin_Deva', 'sat_Olck']
+LanguageCode = Literal['eng_Latn', 'hin_Deva', 'mar_Deva']
 
 
 class RegisterIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     email: str = Field(min_length=5, max_length=255)
     password: str = Field(min_length=8, max_length=128)
-    preferred_language: LanguageCode = 'hin_Deva'
-    account_role: Literal['student', 'admin'] = 'student'
 
 
 class LoginIn(BaseModel):
@@ -43,6 +41,7 @@ class LessonPatchIn(BaseModel):
     topic: str | None = Field(default=None, max_length=160)
     learning_outcome: str | None = Field(default=None, max_length=1000)
     concepts: list[str] | None = Field(default=None, max_length=30)
+    source_language: LanguageCode | None = None
 
 
 class VersionCreateIn(BaseModel):
@@ -87,7 +86,7 @@ class SyncPushIn(BaseModel):
 
 
 class TTSIn(BaseModel):
-    target_language: LanguageCode = 'sat_Olck'
+    target_language: LanguageCode = 'mar_Deva'
     speaker: str = Field(default='classroom_teacher', min_length=1, max_length=100)
 
 

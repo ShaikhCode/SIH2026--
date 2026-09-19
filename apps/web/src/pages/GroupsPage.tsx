@@ -9,11 +9,10 @@ import { useAuth } from '../features/auth/AuthContext';
 
 export default function GroupsPage() {
   const { user } = useAuth();
-  const isAdmin = user?.account_role === 'admin';
   const [params, setParams] = useSearchParams();
   const [groups, setGroups] = useState<Group[]>([]);
   const [filter, setFilter] = useState('');
-  const [showCreate, setShowCreate] = useState(params.get('create') === '1' && isAdmin);
+  const [showCreate, setShowCreate] = useState(params.get('create') === '1');
   const [showJoin, setShowJoin] = useState(false);
   const [form, setForm] = useState({ name: '', grade: 'Grade 2', subject: 'Environmental Studies' });
   const [joinCode, setJoinCode] = useState('');
@@ -55,10 +54,10 @@ export default function GroupsPage() {
     finally { setBusy(false); }
   };
 
-  return <Page eyebrow="CLASSROOMS" title={isAdmin ? 'Your classrooms' : 'Join a classroom'} subtitle={isAdmin ? 'One classroom can hold the lesson workflow, membership and offline learning journey.' : 'Enter the code shared by your educator. You can switch between your classrooms later.'} actions={<div className="head-action-row">{!isAdmin && <Button variant="secondary" onClick={() => setShowJoin(true)}><LogIn size={16} /> Join classroom</Button>}{isAdmin && <Button onClick={() => setShowCreate(true)}><Plus size={16} /> Create classroom</Button>}</div>}>
+  return <Page eyebrow="CLASSROOMS" title="Your classrooms" subtitle="Create a classroom to teach, or join one to learn. The same account can do both." actions={<div className="head-action-row"><Button variant="secondary" onClick={() => setShowJoin(true)}><LogIn size={16} /> Join classroom</Button><Button onClick={() => setShowCreate(true)}><Plus size={16} /> Create classroom</Button></div>}>
     {error && <Card className="error-card"><Status tone="danger">{error}</Status><button onClick={() => void load()}>Reload classrooms</button></Card>}
     <Card className="toolbar-card"><div className="search-box"><Search size={17} /><input value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Search by classroom, grade or subject…" /></div><span className="toolbar-count">{filtered.length} classroom{filtered.length === 1 ? '' : 's'}</span></Card>
-    {filtered.length === 0 ? <Empty title={filter ? 'No matching classrooms' : isAdmin ? 'No classrooms yet' : 'You have not joined a classroom yet'} body={filter ? 'Try another search.' : isAdmin ? 'Create your first classroom to start the lesson pipeline.' : 'Use your educator’s join code to get started.'} action={!filter && (isAdmin ? <Button onClick={() => setShowCreate(true)}><Plus size={16} /> Create classroom</Button> : <Button onClick={() => setShowJoin(true)}><LogIn size={16} /> Join classroom</Button>)} /> : <div className="classroom-grid">{filtered.map((group) => <Link to={`/groups/${group.id}`} key={group.id} className="classroom-card"><div className="classroom-card-top"><div className="group-avatar"><Users size={21} /></div><span className="status-pill">{group.grade}</span></div><strong>{group.name}</strong><span>{group.subject}</span><div className="classroom-card-footer"><span>{isAdmin ? Math.max(0, group.members - 1) : group.members} learner{Math.max(0, group.members - 1) === 1 ? '' : 's'}</span><span>{group.lessons} lesson{group.lessons === 1 ? '' : 's'}</span><ArrowRight size={16} /></div></Link>)}</div>}
+    {filtered.length === 0 ? <Empty title={filter ? 'No matching classrooms' : 'No classrooms yet'} body={filter ? 'Try another search.' : 'Create a classroom to teach, or use a join code to learn.'} action={!filter ? <div className="button-row"><Button onClick={() => setShowCreate(true)}><Plus size={16} /> Create classroom</Button><Button variant="secondary" onClick={() => setShowJoin(true)}><LogIn size={16} /> Join classroom</Button></div> : undefined} /> : <div className="classroom-grid">{filtered.map((group) => <Link to={`/groups/${group.id}`} key={group.id} className="classroom-card"><div className="classroom-card-top"><div className="group-avatar"><Users size={21} /></div><span className="status-pill">{group.grade}</span></div><strong>{group.name}</strong><span>{group.subject}</span><div className="classroom-card-footer"><span>{group.is_owner ? Math.max(0, group.members - 1) : group.members} learner{(group.is_owner ? Math.max(0, group.members - 1) : group.members) === 1 ? '' : 's'}</span><span>{group.lessons} lesson{group.lessons === 1 ? '' : 's'}</span><ArrowRight size={16} /></div></Link>)}</div>}
 
     {showCreate && <Modal title="Create a new classroom" onClose={() => close('create')}>
       <div className="modal-intro"><div className="modal-icon"><Plus size={18} /></div><div><strong>Set up the learning space first.</strong><p>You can change lesson content later. The generated join code will be shown after creation.</p></div></div>

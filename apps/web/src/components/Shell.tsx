@@ -7,9 +7,8 @@ import { LANGS, type Lang } from '../types';
 export function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
-  const [language, setLanguage] = useState<Lang>(() => (localStorage.getItem('bhashasaathi_language') as Lang) || user?.preferred_language || 'eng_Latn');
+  const [language, setLanguage] = useState<Lang>(() => (localStorage.getItem('bhashasaathi_language') as Lang) || 'eng_Latn');
   const navigate = useNavigate();
-  const isCreator = user?.account_role === 'admin';
 
   useEffect(() => {
     const close = () => setOpen(false);
@@ -18,23 +17,17 @@ export function Shell({ children }: { children: ReactNode }) {
   }, []);
 
   const setPreferredLanguage = (next: Lang) => {
-    setLanguage(next); localStorage.setItem('bhashasaathi_language', next);
+    setLanguage(next); localStorage.setItem('bhashasaathi_language', next); localStorage.setItem('student_language', next);
     window.dispatchEvent(new CustomEvent('bhashasaathi:language-changed', { detail: next }));
   };
 
-  const links = isCreator
-    ? [
-        { to: '/dashboard', label: 'Workspace', Icon: LayoutDashboard },
-        { to: '/groups', label: 'Classrooms', Icon: Users },
-        { to: '/student', label: 'My Learning', Icon: GraduationCap },
-        { to: '/offline', label: 'Offline Center', Icon: WifiOff },
-        { to: '/diagnostics', label: 'Diagnostics', Icon: Activity },
-      ]
-    : [
-        { to: '/student', label: 'My Learning', Icon: GraduationCap },
-        { to: '/groups', label: 'Join Classroom', Icon: Users },
-        { to: '/offline', label: 'Offline Center', Icon: WifiOff },
-      ];
+  const links = [
+    { to: '/dashboard', label: 'Workspace', Icon: LayoutDashboard },
+    { to: '/groups', label: 'Classrooms', Icon: Users },
+    { to: '/student', label: 'My Learning', Icon: GraduationCap },
+    { to: '/offline', label: 'Offline Center', Icon: WifiOff },
+    { to: '/diagnostics', label: 'Diagnostics', Icon: Activity },
+  ];
 
   const signOut = async () => { await logout(); navigate('/login', { replace: true }); };
 
@@ -45,7 +38,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="side-brand-copy"><strong>BhashaSaathi</strong><span>Translate the classroom, not just the words.</span></div>
         <button className="mobile-close" onClick={() => setOpen(false)} aria-label="Close navigation"><X size={18} /></button>
       </div>
-      <div className="role-badge"><School size={12} /> {isCreator ? 'CREATOR' : 'LEARNER'}</div>
+      <div className="role-badge"><School size={12} /> TEACH + LEARN</div>
       <nav className="side-nav">
         {links.map(({ to, label, Icon }) => <NavLink key={to} to={to} onClick={() => setOpen(false)} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon size={18} /><span>{label}</span></NavLink>)}
       </nav>
@@ -54,7 +47,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <label htmlFor="workspace-language">Language</label>
           <div className="language-select-wrap"><LanguagesIcon /><select id="workspace-language" value={language} onChange={(e) => setPreferredLanguage(e.target.value as Lang)}>{Object.entries(LANGS).map(([code, info]) => <option key={code} value={code}>{info.native} · {info.name}</option>)}</select><ChevronDown size={14} /></div>
         </div>
-        <div className="user-mini"><div className="avatar">{user?.name?.slice(0, 1).toUpperCase()}</div><div><strong>{user?.name}</strong><span>{isCreator ? 'Creator account' : 'Student account'}</span></div></div>
+        <div className="user-mini"><div className="avatar">{user?.name?.slice(0, 1).toUpperCase()}</div><div><strong>{user?.name}</strong><span>Flexible classroom account</span></div></div>
         <button className="logout-btn" onClick={signOut}><LogOut size={16} /> Sign out</button>
       </div>
     </aside>

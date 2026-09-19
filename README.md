@@ -8,9 +8,9 @@ BhashaSaathi is a teacher-first multilingual classroom platform for SIH26042. Th
 
 ## Locked demo path
 
-- Hindi source
-- Santhali showcase in **Ol Chiki**
-- English secondary language
+- Source language can be Hindi, English, or Marathi
+- Marathi showcase in **Devanagari**
+- English + Hindi available as additional translation targets
 - IndicTrans2 for local translation
 - faster-whisper Small for Hindi/English teacher speech
 - Indic Parler-TTS for local/server-side audio generation and caching
@@ -18,11 +18,17 @@ BhashaSaathi is a teacher-first multilingual classroom platform for SIH26042. Th
 - IndexedDB + Service Worker for offline student learning
 - No paid API is required at runtime
 
+### Product language decision
+
+The current prototype intentionally uses **Marathi** instead of Santhali because the team has chosen a language stack they can demonstrate reliably end-to-end with the local IndicTrans2 and Indic Parler-TTS models. IndicTrans2 officially lists `mar_Deva`, and AI4Bharat's Indic Parler-TTS model lists Marathi as an officially supported language.
+
+**SIH26042 compliance note:** the problem statement explicitly asks for Ho, Mundari and Santhali and accepts a minimum of one tribal language at prototype stage. Marathi is therefore a deliberate prototype substitution, not a claim of full SIH language compliance. A tribal-language adapter and qualified native-language review remain required before presenting Marathi as the final deployment language.
+
 ## What is included
 
 ### Educator
 
-Authentication and roles, classroom groups, join codes, lesson creation, voice recording/upload, editable STT transcript, learning outcome metadata, concept extraction, deterministic classroom suggestions, Hindi/English/Santhali translation, Translation Guard, teacher editing/approval, cached TTS, worksheet preview, concept flashcards, practice generation, publish, version history and rollback, model/API diagnostics.
+Authentication, flexible teach + learn accounts, classroom groups, join codes, lesson creation, voice recording/upload, editable STT transcript, learning outcome metadata, concept extraction, deterministic classroom suggestions, Hindi/English/Marathi translation, Translation Guard, teacher editing/approval, cached TTS, worksheet preview, concept flashcards, practice generation, publish, version history and rollback, model/API diagnostics.
 
 ### Student
 
@@ -30,7 +36,7 @@ Group lessons, language selection, published lesson player, cached audio, worksh
 
 ### Trust rules
 
-Original lesson text is preserved. AI output is reviewable. Santhali is never presented as native-verified merely because a model generated it. Publish requires teacher approval and required review flags to be clear. The product never claims zero translation errors.
+Original lesson text is preserved. AI output is reviewable. Marathi is never presented as native-verified merely because a model generated it. Publish requires teacher approval and required review flags to be clear. The product never claims zero translation errors.
 
 ## Folder layout
 
@@ -69,7 +75,8 @@ Also keep your existing `apps/api/.env` file. The ZIP contains `.env.example`, n
 D:
 cd \git\BhashaSaathi_Local_NoDocker\apps\api
 .\.venv\Scripts\activate
-pip install -r requirements.txt
+# Keep the already-validated local model environment; do not blindly reinstall it on Python 3.13.
+# If dependencies are missing, use the pinned versions documented in MODEL_INTEGRATION_HANDOFF.md.
 ```
 
 Your model folders should already pass:
@@ -154,18 +161,18 @@ The demo uses `.local` addresses intentionally. The backend accepts these local-
 
 ## Recommended SIH demo flow
 
-1. Teacher signs in.
+1. Sign in.
 2. Open **Demo Primary Classroom**.
 3. Create/open **Why Plants Need Water**.
 4. Enter or record Hindi.
 5. Run Whisper and edit the transcript.
 6. Run Understand to get concepts + learning outcome.
-7. Choose Santhali and generate the translation.
+7. Choose any supported target language (for example Marathi) and generate the translation.
 8. Show Translation Guard flags/confidence.
 9. Review/edit and teacher-approve.
 10. Generate practice, worksheet, flashcards and audio.
 11. Publish.
-12. Student signs in and selects Santhali.
+12. Open **My Learning** and select Marathi, Hindi, or English.
 13. Download the lesson.
 14. Open the lesson and play cached audio.
 15. Disconnect network.

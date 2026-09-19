@@ -73,9 +73,9 @@ DEMO ACCOUNTS
 
 FINAL PRODUCT FLOW
   Login -> Classroom -> Lesson -> Source/STT -> Understand -> Concepts ->
-  English + Santhali -> Translation Guard -> Teacher approval ->
-  Santhali practice approval -> Worksheet -> Flashcards -> Santhali TTS ->
-  Publish -> Student -> Santhali -> Read/Listen/Practice -> Download ->
+  English + Marathi -> Translation Guard -> Teacher approval ->
+  Marathi practice approval -> Worksheet -> Flashcards -> Marathi TTS ->
+  Publish -> Student -> Marathi -> Read/Listen/Practice -> Download ->
   Offline -> Answer -> Sync
 
 PUBLISH IS INTENTIONALLY BLOCKED UNTIL THE REQUIRED PACKAGE IS COMPLETE.

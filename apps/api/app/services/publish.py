@@ -18,7 +18,8 @@ def can_publish(db: Session, lesson: Lesson, version: LessonVersion) -> tuple[bo
         row.target_language: row
         for row in db.query(Translation).filter_by(lesson_version_id=version.id).all()
     }
-    required = ('eng_Latn', 'sat_Olck')
+    all_languages = ('eng_Latn', 'hin_Deva', 'mar_Deva')
+    required = tuple(language for language in all_languages if language != lesson.source_language)
     for lang in required:
         row = translations.get(lang)
         if not row:
@@ -52,25 +53,26 @@ def can_publish(db: Session, lesson: Lesson, version: LessonVersion) -> tuple[bo
         lesson_version_id=version.id,
         approved=True,
     ).count()
-    approved_santhali = db.query(PracticeQuestion).filter_by(
-        lesson_version_id=version.id,
-        language='sat_Olck',
-        approved=True,
-    ).count()
     if approved_questions == 0:
         problems.append('PRACTICE_NOT_APPROVED')
-    if approved_santhali == 0:
-        problems.append('SANTHALI_PRACTICE_NOT_APPROVED')
+    for language in required:
+        approved_for_language = db.query(PracticeQuestion).filter_by(
+            lesson_version_id=version.id,
+            language=language,
+            approved=True,
+        ).count()
+        if approved_for_language == 0:
+            problems.append(f'PRACTICE_NOT_APPROVED:{language}')
 
-    # The SIH demo promise includes target-language synthesized audio. Require the
-    # approved Santhali artifact before a lesson can become learner-facing.
-    santhali_audio = db.query(Artifact).filter_by(
-        lesson_version_id=version.id,
-        type='audio',
-        language='sat_Olck',
-    ).count()
-    if santhali_audio == 0:
-        problems.append('SANTHALI_AUDIO_NOT_PREPARED')
+    # Every learner-facing translated target gets its own cached audio artifact.
+    for language in required:
+        audio_count = db.query(Artifact).filter_by(
+            lesson_version_id=version.id,
+            type='audio',
+            language=language,
+        ).count()
+        if audio_count == 0:
+            problems.append(f'AUDIO_NOT_PREPARED:{language}')
 
     return not problems, problems
 

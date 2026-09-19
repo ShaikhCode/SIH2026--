@@ -66,7 +66,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--skip-tts', action='store_true')
     parser.add_argument('--audio', type=Path)
-    parser.add_argument('--stt-language', choices=['eng_Latn', 'hin_Deva', 'sat_Olck'])
+    parser.add_argument('--stt-language', choices=['eng_Latn', 'hin_Deva', 'mar_Deva'])
     args = parser.parse_args()
 
     print('BhashaSaathi local-model laboratory')
@@ -80,7 +80,7 @@ def main() -> int:
     results = []
     results.append(translation_test(translation, 'eng_Latn', 'hin_Deva', 'Welcome to our classroom.'))
     results.append(translation_test(translation, 'hin_Deva', 'eng_Latn', 'हमारी कक्षा में आपका स्वागत है।'))
-    results.append(translation_test(translation, 'hin_Deva', 'sat_Olck', 'पौधों को पानी की आवश्यकता होती है।'))
+    results.append(translation_test(translation, 'hin_Deva', 'mar_Deva', 'पौधों को पानी की आवश्यकता होती है।'))
 
     if args.audio:
         results.append(whisper_test(stt, args.audio, args.stt_language))

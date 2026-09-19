@@ -72,11 +72,11 @@ export default function DiagnosticsPage() {
       <div className="demo-check-grid">
         {[
           'Login', 'Create classroom', 'Create lesson', 'Whisper transcript', 'Concepts + learning outcome',
-          'Hindi → English', 'Hindi → Santhali', 'Translation Guard', 'Teacher approval', 'Santhali TTS',
+          'Hindi → English', 'Hindi → Marathi', 'Translation Guard', 'Teacher approval', 'Marathi TTS',
           'Worksheet + flashcards', 'Publish package', 'Offline lesson', 'Offline practice + sync',
         ].map((item) => <div key={item}><CheckCircle2 /> {item}</div>)}
       </div>
-      <div className="footer-note">Do not label an AI-generated Santhali translation as native-verified without qualified language review. Do not claim zero translation errors or guaranteed on-device generative AI on low-end Android.</div>
+      <div className="footer-note">Do not label an AI-generated Marathi translation as automatically verified without qualified language review. Do not claim zero translation errors or guaranteed on-device generative AI on low-end Android.</div>
     </Card>
     {data?.models?.last_error && <Card className="error-card"><SectionTitle title="Last model error" subtitle="The backend stores the latest isolated model failure to make debugging actionable." /><pre className="json-view">{JSON.stringify(data.models.last_error, null, 2)}</pre></Card>}
   </Page>;

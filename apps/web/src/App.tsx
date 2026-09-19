@@ -21,27 +21,21 @@ function Protected({ children }: { children: ReactNode }) {
   return user ? <Shell>{children}</Shell> : <Navigate to="/login" replace />;
 }
 
-function Role({ role, children }: { role: 'admin' | 'student'; children: ReactNode }) {
-  const { user } = useAuth();
-  if (!user) return <Navigate to="/login" replace />;
-  if (user.account_role === role || (role === 'student' && user.account_role === 'admin')) return <>{children}</>;
-  return <Navigate to={user.account_role === 'admin' ? '/dashboard' : '/student'} replace />;
-}
 
 export default function App() {
   return <Routes>
     <Route path="/login" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
     <Route path="/" element={<LandingPage />} />
-    <Route path="/dashboard" element={<Protected><Role role="admin"><AdminDashboardPage /></Role></Protected>} />
+    <Route path="/dashboard" element={<Protected><AdminDashboardPage /></Protected>} />
     <Route path="/groups" element={<Protected><GroupsPage /></Protected>} />
     <Route path="/groups/:id" element={<Protected><GroupPage /></Protected>} />
-    <Route path="/lessons/:id/builder" element={<Protected><Role role="admin"><LessonBuilderPage /></Role></Protected>} />
-    <Route path="/student" element={<Protected><Role role="student"><StudentHomePage /></Role></Protected>} />
-    <Route path="/student/lessons/:id" element={<Protected><Role role="student"><StudentLessonPage /></Role></Protected>} />
-    <Route path="/practice/:id" element={<Protected><Role role="student"><StudentLessonPage /></Role></Protected>} />
+    <Route path="/lessons/:id/builder" element={<Protected><LessonBuilderPage /></Protected>} />
+    <Route path="/student" element={<Protected><StudentHomePage /></Protected>} />
+    <Route path="/student/lessons/:id" element={<Protected><StudentLessonPage /></Protected>} />
+    <Route path="/practice/:id" element={<Protected><StudentLessonPage /></Protected>} />
     <Route path="/offline" element={<Protected><OfflinePage /></Protected>} />
-    <Route path="/diagnostics" element={<Protected><Role role="admin"><DiagnosticsPage /></Role></Protected>} />
+    <Route path="/diagnostics" element={<Protected><DiagnosticsPage /></Protected>} />
     <Route path="*" element={<NotFoundPage />} />
   </Routes>;
 }
