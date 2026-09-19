@@ -1,8 +1,8 @@
 import { openDB, type IDBPDatabase } from 'idb';
 
 const DB = 'bhashasaathi-local';
-const VERSION = 2;
-const STORES = ['session', 'groups', 'lessons', 'audio', 'attempts', 'sync_queue', 'app_metadata'] as const;
+const VERSION = 3;
+const STORES = ['session', 'groups', 'lessons', 'audio', 'attempts', 'sync_queue', 'app_metadata', 'live_history'] as const;
 
 type StoreName = (typeof STORES)[number];
 
@@ -43,5 +43,12 @@ export async function clearStore(store: StoreName) {
 }
 
 export async function clearOfflineContent() {
-  await Promise.all([clearStore('groups'), clearStore('lessons'), clearStore('audio'), clearStore('attempts'), clearStore('sync_queue'), clearStore('app_metadata')]);
+  await Promise.all([
+    clearStore('groups'),
+    clearStore('lessons'),
+    clearStore('audio'),
+    clearStore('attempts'),
+    clearStore('sync_queue'),
+    clearStore('app_metadata'),
+  ]);
 }

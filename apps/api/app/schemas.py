@@ -92,3 +92,13 @@ class TTSIn(BaseModel):
 
 class FlashcardIn(BaseModel):
     language: LanguageCode = 'hin_Deva'
+
+
+class LiveWarmIn(BaseModel):
+    source_language: LanguageCode = 'hin_Deva'
+    target_language: LanguageCode = 'mar_Deva'
+
+
+class WarmTranslationIn(BaseModel):
+    source_language: LanguageCode
+    target_language: LanguageCode

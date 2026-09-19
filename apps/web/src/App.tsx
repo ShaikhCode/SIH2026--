@@ -14,6 +14,7 @@ import StudentLessonPage from './pages/StudentLessonPage';
 import OfflinePage from './pages/OfflinePage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import NotFoundPage from './pages/NotFoundPage';
+import LiveTranslatePage from './pages/LiveTranslatePage';
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -27,6 +28,7 @@ export default function App() {
     <Route path="/login" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
     <Route path="/" element={<LandingPage />} />
+    <Route path="/live" element={<LiveTranslatePage />} />
     <Route path="/dashboard" element={<Protected><AdminDashboardPage /></Protected>} />
     <Route path="/groups" element={<Protected><GroupsPage /></Protected>} />
     <Route path="/groups/:id" element={<Protected><GroupPage /></Protected>} />

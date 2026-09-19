@@ -26,10 +26,10 @@ export default function RegisterPage() {
     <div className="auth-card-title"><div className="eyebrow">GET STARTED</div><h1>Create your account</h1><p>One account can teach and learn. Choose a classroom when you need to create it, or join another classroom as a learner.</p></div>
     {error && <Status tone="danger">{error}</Status>}
     <form onSubmit={submit} className="auth-form">
-      <Field label="Username / full name"><input autoComplete="name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Asha Kumar" /></Field>
+      <Field label="Full name"><input autoComplete="name" required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Asha Kumar" /></Field>
       <Field label="Email"><input autoComplete="email" required type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="asha@example.com" /></Field>
       <Field label="Password" hint="At least 8 characters."><input autoComplete="new-password" required minLength={8} type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} /></Field>
-      <div className="language-note"><span>✓</span><span>Your account has no fixed role or language. Teaching and learning access comes from the classrooms you create or join, while source and target languages are chosen inside each workflow.</span></div>
+      <div className="language-note"><span>🌐</span><span>Your account has no fixed language. Select the source and target language for each lesson, and change your learning language from the workspace.</span></div>
       <Button type="submit" disabled={busy} className="full"><UserPlus size={16} />{busy ? 'Creating account…' : 'Create account'}</Button>
     </form>
     <button className="text-link" onClick={() => navigate('/login')}>← Back to sign in</button>

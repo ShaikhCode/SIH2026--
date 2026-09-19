@@ -100,25 +100,18 @@ export default function LessonBuilderPage() {
   }, []);
 
   useEffect(() => {
-    if (!pack) return;
-    let cancelled = false;
-    const loadCachedAudio = async () => {
-      for (const artifact of pack.artifacts.filter((item) => item.type === 'audio')) {
-        if (artifactUrls[artifact.id]) continue;
-        try {
-          const blob = await api.fetchArtifact(artifact.id);
-          if (!cancelled) {
-            const url = URL.createObjectURL(blob);
-            setArtifactUrls((old) => old[artifact.id] ? old : { ...old, [artifact.id]: url });
-          }
-        } catch {
-          // Audio is optional; the text lesson remains usable.
-        }
-      }
-    };
-    void loadCachedAudio();
-    return () => { cancelled = true; };
-  }, [pack?.version.id, pack?.artifacts.length]);
+    if (!hydrated.current || sourceLanguage === target) return;
+    void api.warmTranslation(sourceLanguage, target).catch(() => {
+      // Prewarm is best-effort; the real translation request remains authoritative.
+    });
+  }, [sourceLanguage, target]);
+
+  useEffect(() => {
+    if (step !== 4) return;
+    void api.warmTTS().catch(() => {
+      // The audio action will surface the real runtime error if warm-up fails.
+    });
+  }, [step]);
 
   const saveDraft = useCallback(async (silent = false) => {
     if (!hydrated.current) return;
@@ -446,7 +439,7 @@ export default function LessonBuilderPage() {
           </Card>}
 
           {step === 4 && <Card><SectionTitle title="5. Activities, worksheets & audio" subtitle="Draft useful classroom support, review practice, then prepare cached audio." />
-            <div className="action-card-grid"><Card className="action-card"><div className="action-icon"><FileText size={19} /></div><strong>Practice</strong><span>Generate draft MCQs from approved concepts.</span><div className="button-row wrap">{requiredLanguages.map((lang) => <span key={lang} className="inline-action"><Button variant={activePracticeLanguage === lang ? 'primary' : 'secondary'} onClick={() => void generatePractice(lang)} disabled={!!busy}>{label(lang)}</Button></span>)}</div></Card><Card className="action-card"><div className="action-icon"><Printer size={19} /></div><strong>Worksheet</strong><span>Open the bilingual print-first worksheet inside this app.</span><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}>Preview worksheet</Button></Card><Card className="action-card"><div className="action-icon"><Layers size={19} /></div><strong>Flashcards</strong><span>Generate visual-ready concept cards.</span><Button variant="secondary" onClick={() => void generateFlashcards(target)} disabled={!!busy}>Refresh flashcards</Button></Card><Card className="action-card"><div className="action-icon"><Volume2 size={19} /></div><strong>Audio</strong><span>Generate target audio after translation approval.</span><div className="button-row wrap">{requiredLanguages.map((lang) => <Button key={lang} variant="secondary" onClick={() => void makeTTS(lang)} disabled={!!busy}>{label(lang)}</Button>)}</div></Card></div>
+            <div className="action-card-grid"><Card className="action-card"><div className="action-icon"><FileText size={19} /></div><strong>Practice</strong><span>Generate draft MCQs from approved concepts.</span><div className="button-row wrap">{requiredLanguages.map((lang) => <span key={lang} className="inline-action"><Button variant={activePracticeLanguage === lang ? 'primary' : 'secondary'} onClick={() => void generatePractice(lang)} disabled={!!busy}>{label(lang)}</Button></span>)}</div></Card><Card className="action-card"><div className="action-icon"><Printer size={19} /></div><strong>Worksheet</strong><span>Open the bilingual print-first worksheet inside this app.</span><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}>Preview worksheet</Button></Card><Card className="action-card"><div className="action-icon"><Layers size={19} /></div><strong>Flashcards</strong><span>Generate visual-ready concept cards.</span><Button variant="secondary" onClick={() => void generateFlashcards(target)} disabled={!!busy}>Refresh flashcards</Button></Card><Card className="action-card"><div className="action-icon"><Volume2 size={19} /></div><strong>Audio</strong><span>Generate target audio after translation approval. The voice model preloads when you enter this step, so the button does not have to load it from scratch.</span><div className="button-row wrap">{requiredLanguages.map((lang) => <Button key={lang} variant="secondary" onClick={() => void makeTTS(lang)} disabled={!!busy}>{label(lang)}</Button>)}</div></Card></div>
             <div className="review-block"><SectionTitle title="Practice review" subtitle="Generated questions are drafts until the educator approves them." />{(pack.practice_all || []).filter((q) => q.language === activePracticeLanguage).length === 0 ? <Status tone="warning">Generate {label(activePracticeLanguage)} practice first.</Status> : <div className="practice-review-list">{(pack.practice_all || []).filter((q) => q.language === activePracticeLanguage).map((question) => <div className="practice-review-row" key={question.id}><div><strong>{question.prompt}</strong><span>{question.options.join(' · ')}</span></div>{question.approved ? <Status tone="success">Approved</Status> : <Button variant="secondary" onClick={() => void approvePractice(question)} disabled={!!busy}>Approve</Button>}</div>)}</div>}</div>
             {pack.artifacts.filter((item) => item.type === 'audio').length > 0 && <div className="artifact-list"><SectionTitle title="Prepared audio" subtitle="Protected audio is loaded with the signed user session." />{pack.artifacts.filter((item) => item.type === 'audio').map((artifact) => <div className="artifact-row" key={artifact.id}><div><strong>{label(artifact.language)}</strong><span>{Math.max(1, Math.round(artifact.size_bytes / 1024))} KB cached artifact</span></div>{artifactUrls[artifact.id] ? <audio controls src={artifactUrls[artifact.id]} /> : <Button variant="secondary" onClick={() => void (async () => { try { const blob = await api.fetchArtifact(artifact.id); setArtifactUrls((old) => ({ ...old, [artifact.id]: URL.createObjectURL(blob) })); } catch (err) { setError(errorMessage(err)); } })()}><Play size={15} /> Load audio</Button>}</div>)}</div>}
             <div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue to review <ArrowRight size={16} /></Button></div>

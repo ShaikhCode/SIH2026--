@@ -1,13 +1,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Activity, BookOpen, ChevronDown, GraduationCap, LayoutDashboard, LogOut, Menu, School, Users, WifiOff, X } from 'lucide-react';
+import { Activity, AudioLines, BookOpen, ChevronDown, GraduationCap, LayoutDashboard, LogOut, Menu, School, Users, WifiOff, X } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
 import { LANGS, type Lang } from '../types';
 
 export function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
-  const [language, setLanguage] = useState<Lang>(() => (localStorage.getItem('bhashasaathi_language') as Lang) || 'eng_Latn');
+  const [language, setLanguage] = useState<Lang>(() => (localStorage.getItem('bhashasaathi_language') as Lang) || user?.preferred_language || 'eng_Latn');
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -27,6 +27,7 @@ export function Shell({ children }: { children: ReactNode }) {
     { to: '/student', label: 'My Learning', Icon: GraduationCap },
     { to: '/offline', label: 'Offline Center', Icon: WifiOff },
     { to: '/diagnostics', label: 'Diagnostics', Icon: Activity },
+    { to: '/live', label: 'Live Translate', Icon: AudioLines },
   ];
 
   const signOut = async () => { await logout(); navigate('/login', { replace: true }); };

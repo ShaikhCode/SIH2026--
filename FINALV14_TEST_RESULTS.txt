@@ -1,0 +1,31 @@
+BhashaSaathi FinalV14 — Test Results
+
+Static / Python
+- python -m compileall -q apps/api/app core/layer2 scripts : PASS
+- scripts/audit_finalv14.py : PASS
+- scripts/test_live_pipeline.py : PASS
+
+FastAPI smoke
+- GET /api/v1/health : HTTP 200, version 14.0.0
+- GET /api/v1/live/languages : HTTP 200, exactly English/Hindi/Marathi
+- GET /api/v1/health/models : HTTP 200; sandbox has no local model weights, so readiness is false as expected
+
+Frontend source
+- TypeScript/TSX transpile parse : PASS (23 files)
+- npm install / npm run build : NOT COMPLETED in isolated sandbox because package registry access was unavailable. No false PASS is claimed.
+
+Windows verification required before demo
+1. python scripts\verify_models.py
+2. python scripts\model_lab.py
+3. cd apps\web
+4. npm install
+5. npm run build
+6. npm run dev
+
+Model environment already validated by the project's prior local diagnostic runs:
+- transformers 4.46.1
+- huggingface_hub 0.36.0
+- parler-tts 0.2.2
+- IndicTransToolkit 1.1.1
+- faster-whisper 1.2.1
+- torch 2.14.0+cpu

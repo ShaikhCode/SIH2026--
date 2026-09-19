@@ -14,9 +14,7 @@ def make_code() -> str:
     return ''.join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(7))
 
 
-def group_view(db: Session, group: Group, user_id: int | None = None) -> dict:
-    membership = db.query(Membership).filter_by(group_id=group.id, user_id=user_id).first() if user_id is not None else None
-    is_owner = user_id is not None and group.owner_id == user_id
+def group_view(db: Session, group: Group) -> dict:
     return {
         'id': group.id,
         'name': group.name,
@@ -24,8 +22,6 @@ def group_view(db: Session, group: Group, user_id: int | None = None) -> dict:
         'grade': group.grade,
         'subject': group.subject,
         'owner_id': group.owner_id,
-        'is_owner': is_owner,
-        'membership_role': 'owner' if is_owner else (membership.role if membership else None),
         'members': db.query(Membership).filter_by(group_id=group.id).count(),
         'lessons': db.query(Lesson).filter_by(group_id=group.id).count(),
         'published_lessons': db.query(Lesson).filter_by(group_id=group.id, status='PUBLISHED').count(),
@@ -44,7 +40,7 @@ def create_group(x: GroupIn, db: Session = Depends(get_db), user=Depends(current
     db.add(Membership(group_id=group.id, user_id=user.id, role='admin'))
     db.commit()
     db.refresh(group)
-    return group_view(db, group, user.id)
+    return group_view(db, group)
 
 
 @router.get('')
@@ -54,7 +50,7 @@ def list_groups(db: Session = Depends(get_db), user=Depends(current_user)):
     member_rows = db.query(Group).filter(Group.id.in_(ids or [-1])).all()
     by_id = {group.id: group for group in owned + member_rows}
     rows = sorted(by_id.values(), key=lambda item: item.id, reverse=True)
-    return [group_view(db, group, user.id) for group in rows]
+    return [group_view(db, group) for group in rows]
 
 
 @router.get('/{group_id}')
@@ -65,7 +61,7 @@ def get_group(group_id: int, db: Session = Depends(get_db), user=Depends(current
     allowed = group.owner_id == user.id or bool(db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first())
     if not allowed:
         raise HTTPException(403, detail={'code': 'GROUP_ACCESS_DENIED', 'message': 'You are not a member of this classroom.'})
-    return group_view(db, group, user.id)
+    return group_view(db, group)
 
 
 @router.post('/join')
@@ -76,10 +72,10 @@ def join_group(x: JoinIn, db: Session = Depends(get_db), user=Depends(current_us
         raise HTTPException(404, detail={'code': 'JOIN_CODE_INVALID', 'message': 'That join code is not valid.'})
     existing = db.query(Membership).filter_by(group_id=group.id, user_id=user.id).first()
     if existing:
-        return {'already_member': True, 'group': group_view(db, group, user.id)}
+        return {'already_member': True, 'group': group_view(db, group)}
     db.add(Membership(group_id=group.id, user_id=user.id, role='student'))
     db.commit()
-    return {'already_member': False, 'group': group_view(db, group, user.id)}
+    return {'already_member': False, 'group': group_view(db, group)}
 
 
 @router.get('/{group_id}/members')

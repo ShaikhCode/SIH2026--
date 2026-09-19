@@ -4,7 +4,6 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# apps/api (not apps/api/app) is the runtime root.
 API_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -23,10 +22,19 @@ class Settings(BaseSettings):
     tts_enabled: bool = True
     llm_enabled: bool = False
     cpu_only: bool = False
+    keep_models_loaded: bool = True
     log_level: str = 'INFO'
     max_audio_mb: int = 30
     max_translation_chars: int = 12000
+    max_live_segment_ms: int = 2200
+    live_end_silence_ms: int = 280
+    live_queue_size: int = 2
+    live_translation_beams: int = 2
+    live_tts_stream_seconds: float = 1.0
+    live_tts_stream_timeout: float = 15.0
+    text_translation_beams: int = 3
     parler_description_tokenizer: str = ''
+    live_history_ttl_hours: int = 24
 
     model_config = SettingsConfigDict(
         env_file='.env',
@@ -43,8 +51,6 @@ def _resolve_local_path(value: str) -> Path:
     return path.resolve() if path.is_absolute() else (API_ROOT / path).resolve()
 
 
-# Keep local paths stable regardless of whether uvicorn is started from apps/api,
-# the repository root, or another working directory.
 STORAGE_ROOT = _resolve_local_path(settings.storage_dir)
 MODELS_ROOT = _resolve_local_path(settings.model_dir)
 DATA_ROOT = API_ROOT / 'data'
@@ -53,9 +59,6 @@ if settings.database_url.startswith('sqlite:///'):
     sqlite_path = Path(settings.database_url.removeprefix('sqlite:///'))
     if not sqlite_path.is_absolute():
         settings.database_url = f'sqlite:///{(API_ROOT / sqlite_path).resolve().as_posix()}'
-
-# Relative PARLER_DESCRIPTION_TOKENIZER values are resolved by the TTS adapter
-# against MODELS_ROOT. Absolute values are preserved.
 
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 MODELS_ROOT.mkdir(parents=True, exist_ok=True)

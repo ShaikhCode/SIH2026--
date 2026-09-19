@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timezone
 from collections.abc import Callable
 
@@ -53,21 +52,14 @@ def analyze_source(text: str, grade: str, subject: str, topic: str = '') -> dict
     }
 
 
-def _base_question(concept_label: str, language: str) -> tuple[str, list[str], str, str]:
-    """Return a deterministic source-language question template.
-
-    Marathi is deliberately NOT hard-coded here. When target language is
-    Marathi, the route translates this template with the local model before
-    saving it as a draft, so unverified AI output never becomes an approved
-    translation automatically.
-    """
-    if language == 'hin_Deva':
-        prompt = f'इस पाठ में “{concept_label}” का क्या महत्व है?'
-        options = [concept_label, 'यह इस पाठ से संबंधित नहीं है', 'मुझे नहीं पता']
-    else:
-        prompt = f'Why is “{concept_label}” important in this lesson?'
-        options = [concept_label, 'It is unrelated to the lesson', 'I am not sure']
-    return prompt, options, concept_label, f'This question checks understanding of the concept “{concept_label}”.'
+def _english_question(concept_label: str) -> list[str]:
+    return [
+        f'Why is “{concept_label}” important in this lesson?',
+        concept_label,
+        'It is unrelated to the lesson',
+        'I am not sure',
+        f'This question checks understanding of the concept “{concept_label}”.',
+    ]
 
 
 def ensure_practice(
@@ -78,46 +70,43 @@ def ensure_practice(
     count: int = 4,
     approved: bool = False,
     translate_fn: Callable[[str, str, str], str] | None = None,
+    translate_many_fn: Callable[[list[str], str, str], list[str]] | None = None,
 ):
     concepts = json.loads(version.concepts_json or '[]')
-    existing = db.query(PracticeQuestion).filter_by(lesson_version_id=version.id, language=language).all()
+    existing = db.query(PracticeQuestion).filter_by(lesson_version_id=version.id, language=language).order_by(PracticeQuestion.id.asc()).all()
     if existing:
-        return existing
+        return existing[:count]
 
-    rows = []
-    for concept in concepts[:count]:
-        cid = concept.get('concept_id', concept.get('label', 'main_idea'))
-        label = concept.get('label', cid)
-        # Build a canonical English question first, then render it in the requested
-        # learner language. This prevents English/Marathi/Hindi questions from
-        # accidentally embedding a concept label in the teacher's source language.
-        source_prompt, options, _, explanation = _base_question(label, 'eng_Latn')
-        target_label = label
-        if translate_fn is not None and source_language != 'eng_Latn':
-            target_label = translate_fn(label, source_language, 'eng_Latn')
-        english_prompt = f'Why is “{target_label}” important in this lesson?'
-        english_options = [target_label, 'It is unrelated to the lesson', 'I am not sure']
-        if language == 'eng_Latn':
-            prompt, translated_options, correct, translated_explanation = english_prompt, english_options, target_label, explanation
+    concepts = concepts[: max(1, min(count, 10))]
+    canonical: list[str] = []
+    concept_ids: list[str] = []
+    for concept in concepts:
+        label = concept.get('label') or concept.get('concept_id') or 'main idea'
+        concept_ids.append(concept.get('concept_id', label))
+        canonical.extend(_english_question(label))
+
+    if language == 'eng_Latn':
+        rendered = canonical
+    else:
+        if translate_many_fn is not None:
+            rendered = translate_many_fn(canonical, 'eng_Latn', language)
+        elif translate_fn is not None:
+            rendered = [translate_fn(text, 'eng_Latn', language) for text in canonical]
         else:
-            if translate_fn is None:
-                raise RuntimeError('A local translation function is required to draft non-English practice.')
-            prompt = translate_fn(english_prompt, 'eng_Latn', language)
-            translated_options = [
-                translate_fn(english_options[0], 'eng_Latn', language),
-                translate_fn(english_options[1], 'eng_Latn', language),
-                translate_fn(english_options[2], 'eng_Latn', language),
-            ]
-            correct = translated_options[0]
-            translated_explanation = translate_fn(explanation, 'eng_Latn', language)
+            raise RuntimeError('A local translation function is required to draft non-English practice.')
 
+    rows: list[PracticeQuestion] = []
+    for index, concept_id in enumerate(concept_ids):
+        values = rendered[index * 5:index * 5 + 5]
+        if len(values) != 5:
+            continue
         rows.append(PracticeQuestion(
             lesson_version_id=version.id,
-            concept_id=cid,
-            prompt=prompt,
-            options_json=json.dumps(translated_options, ensure_ascii=False),
-            correct_answer=correct,
-            explanation=translated_explanation,
+            concept_id=concept_id,
+            prompt=values[0],
+            options_json=json.dumps(values[1:4], ensure_ascii=False),
+            correct_answer=values[1],
+            explanation=values[4],
             language=language,
             question_type='mcq',
             approved=approved,
@@ -138,8 +127,6 @@ def evaluate_attempt(version: LessonVersion, answers: dict, questions):
     for question in questions:
         answer = str(answers.get(str(question.id), '')).strip().lower()
         expected = question.correct_answer.strip().lower()
-        # Prepared MCQs use a canonical correct-answer value. The concept result
-        # remains attached to the question concept so progress can be aggregated.
         ok = answer == expected
         results[question.concept_id] = {
             'understood': ok,

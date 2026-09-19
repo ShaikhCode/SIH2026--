@@ -492,7 +492,10 @@ def generate_practice(lesson_id: int, x: PracticeGenerateIn, db: Session = Depen
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
-    rows = ensure_practice(db=db, version=version, language=x.language, source_language=lesson.source_language, count=x.count, approved=False, translate_fn=manager.translate)
+    rows = ensure_practice(
+        db=db, version=version, language=x.language, source_language=lesson.source_language,
+        count=x.count, approved=False, translate_fn=manager.translate, translate_many_fn=manager.translate_many,
+    )
     return [_practice_view(q) for q in rows]
 
 

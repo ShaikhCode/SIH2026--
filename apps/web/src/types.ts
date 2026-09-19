@@ -1,4 +1,6 @@
 export type Lang = 'eng_Latn' | 'hin_Deva' | 'mar_Deva';
+export type Role = 'user' | 'admin' | 'student';
+
 export const LANGS: Record<Lang, { name: string; native: string; script: string }> = {
   eng_Latn: { name: 'English', native: 'English', script: 'Latin' },
   hin_Deva: { name: 'Hindi', native: 'हिन्दी', script: 'Devanagari' },
@@ -9,6 +11,9 @@ export interface User {
   id: number;
   name: string;
   email: string;
+  preferred_language: Lang;
+  account_role: Role;
+  capabilities?: { create_classroom: boolean; join_classroom: boolean };
 }
 
 export interface Group {
@@ -18,11 +23,8 @@ export interface Group {
   grade: string;
   subject: string;
   owner_id: number;
-  is_owner: boolean;
-  membership_role: 'owner' | 'admin' | 'student' | null;
   members: number;
   lessons: number;
-  published_lessons?: number;
   created_at: string;
 }
 
@@ -133,3 +135,6 @@ export interface ApiErrorShape {
   retryable?: boolean;
   request_id?: string;
 }
+
+export interface LiveLanguage { code: Lang; name: string; native: string; whisper?: string }
+export interface LiveWarmResult { source: Lang; target: Lang; warm_ms: number; [key: string]: unknown }

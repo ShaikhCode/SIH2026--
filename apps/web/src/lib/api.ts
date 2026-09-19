@@ -1,5 +1,5 @@
 import type {
-  ApiErrorShape,
+  ApiErrorShape, LiveLanguage, LiveWarmResult,
   Group,
   Lang,
   LessonPack,
@@ -168,6 +168,13 @@ export const api = {
 
   health: () => request<any>('/health'),
   modelHealth: () => request<any>('/health/models'),
+  liveLanguages: () => request<LiveLanguage[]>('/live/languages'),
+  warmLive: (source_language: Lang, target_language: Lang) =>
+    request<LiveWarmResult>('/live/warm', { method: 'POST', body: JSON.stringify({ source_language, target_language }) }),
+  warmTranslation: (source_language: Lang, target_language: Lang) =>
+    request<{ source: Lang; target: Lang; route: string; warm_ms: number }>('/runtime/warm-translation', { method: 'POST', body: JSON.stringify({ source_language, target_language }) }),
+  warmTTS: () =>
+    request<{ ready: boolean; warm_ms: number }>('/runtime/warm-tts', { method: 'POST' }),
 };
 
 export function errorMessage(error: unknown): string {

@@ -207,3 +207,11 @@ The local Windows model directories are **not accessible from this sandbox**, so
 ## Product boundaries
 
 The MVP intentionally does not add social networking, parent portals, leaderboards, blockchain, huge analytics, ERP, dozens of autonomous agents, all Indian languages, foundation-model training, or full generative AI on low-end Android.
+
+## FinalV14 performance/live release notes
+
+This archive is **FinalV14** (13 prior ZIP builds were present in the working build directory).
+
+The major additions are the homepage **Live Translate** tool (English/Hindi/Marathi only), bounded pipelining, warm-model runtime, translation/TTS caches, runtime prewarm, browser 16 kHz capture, streamed Parler-TTS PCM playback, and 24-hour temporary device-local Live Translate history.
+
+See `FINALV14_README.md`, `FINALV14_AUDIT_REPORT.md`, and `VERSION_HISTORY.md` for the exact file map and audit details.

@@ -1,24 +1,24 @@
-BHASHASAATHI FINAL AUDITED BUILD MANIFEST
+BHASHASAATHI FINALV14 BUILD MANIFEST
 
-Release: final-audited-local-nodocker
+Release: FinalV14 — performance + Live Translate + classroom optimization
+Prior ZIP count in working directory: 13
 Architecture: React/Vite + FastAPI + Layer2 + SQLite + IndexedDB/PWA
-Primary demo path: Hindi -> Marathi (Devanagari)
-Secondary: English
+Primary demo path: Hindi -> Marathi
+Live demo language set: English / Hindi / Marathi only
 
 WEB
-- Landing page
-- Login/register
-- Educator dashboard
+- Landing page with public Live Translate CTA
+- Login/register with flexible account capability model
+- Educator/creator dashboard
 - Classroom create/list/view/join
 - Lesson builder with state-gated steps
 - Source editor + mic/upload STT
 - Understand/concepts editor
-- English + Marathi generation
+- English + Hindi + Marathi translation workflow
 - Translation Guard
-- Teacher translation approval
-- Marathi native-review separation
+- Teacher translation approval + native-review separation
 - Practice draft generation + approval
-- In-app worksheet preview/print
+- Worksheet preview/print
 - Flashcards
 - TTS artifact playback
 - Review/publish
@@ -28,17 +28,22 @@ WEB
 - Offline lesson cache
 - Offline practice queue
 - Diagnostics
+- Live Translate WebSocket UI
+- Laptop microphone input + Buds/headphone output guidance
+- Temporary device-local Live Translate history (24h) + Save/Delete
 
 BACKEND
 - FastAPI REST API
+- WebSocket Live Translate API
 - JWT + Argon2id
 - Owner/member authorization
 - SQLite + Alembic
 - Layer2 text engine isolated from routes
-- IndicTrans2 adapter
-- faster-whisper adapter
-- Indic Parler-TTS adapter
+- Persistent IndicTrans2 adapter with bounded route LRU + translation cache
+- faster-whisper adapter with fast live settings
+- Persistent Indic Parler-TTS adapter with bounded audio cache + streaming adapter
 - Translation Guard diagnostics
+- Runtime model prewarm endpoints
 - TTS artifact caching
 - Publish validation gate
 - Version/rollback
@@ -52,13 +57,15 @@ apps/api/models/translation/en-indic
 apps/api/models/translation/indic-en
 apps/api/models/stt/whisper-small
 apps/api/models/tts/indic-parler-tts
-optional: apps/api/models/tts/description-tokenizer
+apps/api/models/tts/flan-t5-large
 
-VALIDATION IN SANDBOX
-- Python compile: PASS
-- Alembic fresh migration: PASS
-- FastAPI route smoke: PASS
-- Translation/publish/student/sync contract smoke: PASS with translation adapter stub
-- TS/TSX syntax transpile: PASS (21 files)
-- Full npm dependency build: not run because registry timed out
-- User Windows model inference: must be run locally
+VALIDATION IN THIS BUILD WORKSPACE
+- Python compileall: PASS
+- FastAPI health: PASS
+- FastAPI live-language contract: PASS
+- FastAPI model-health contract: PASS (no local model weights expected in sandbox)
+- FinalV14 static audit: PASS
+- Fake-model live pipeline protocol: PASS
+- TypeScript/TSX syntax transpile: PASS (23 files)
+- Full npm install/build: NOT CLAIMED — registry/dependency installation was unavailable in sandbox
+- Real local model inference: NOT CLAIMED here; run model_lab.py on Windows
