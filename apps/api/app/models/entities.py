@@ -7,6 +7,7 @@ from ..db.session import Base
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
+
 class User(Base):
     __tablename__ = 'users'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -18,6 +19,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
 
+
 class Group(Base):
     __tablename__ = 'groups'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -28,6 +30,7 @@ class Group(Base):
     owner_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+
 class Membership(Base):
     __tablename__ = 'memberships'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -35,7 +38,8 @@ class Membership(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
     role: Mapped[str] = mapped_column(String(30), default='student')
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-    __table_args__ = (UniqueConstraint('group_id','user_id',name='uq_membership_group_user'),)
+    __table_args__ = (UniqueConstraint('group_id', 'user_id', name='uq_membership_group_user'),)
+
 
 class Lesson(Base):
     __tablename__ = 'lessons'
@@ -51,6 +55,7 @@ class Lesson(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
 
 class LessonVersion(Base):
     __tablename__ = 'lesson_versions'
@@ -68,6 +73,7 @@ class LessonVersion(Base):
     created_by: Mapped[int] = mapped_column(ForeignKey('users.id'))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+
 class Translation(Base):
     __tablename__ = 'translations'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -83,7 +89,8 @@ class Translation(Base):
     native_review_status: Mapped[str] = mapped_column(String(30), default='NOT_REVIEWED')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
-    __table_args__ = (UniqueConstraint('lesson_version_id','target_language',name='uq_translation_version_language'),)
+    __table_args__ = (UniqueConstraint('lesson_version_id', 'target_language', name='uq_translation_version_language'),)
+
 
 class Artifact(Base):
     __tablename__ = 'artifacts'
@@ -98,6 +105,7 @@ class Artifact(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default='{}')
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+
 class PracticeQuestion(Base):
     __tablename__ = 'practice_questions'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -111,6 +119,7 @@ class PracticeQuestion(Base):
     question_type: Mapped[str] = mapped_column(String(30), default='mcq')
     approved: Mapped[bool] = mapped_column(Boolean, default=False)
 
+
 class Attempt(Base):
     __tablename__ = 'attempts'
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -123,9 +132,11 @@ class Attempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+
 class SyncRecord(Base):
     __tablename__ = 'sync_records'
     id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
     device_id: Mapped[str] = mapped_column(String(120), index=True)
     operation: Mapped[str] = mapped_column(String(40))
     entity_type: Mapped[str] = mapped_column(String(80))
@@ -135,6 +146,9 @@ class SyncRecord(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    __table_args__ = (UniqueConstraint('user_id', 'device_id', 'operation', 'entity_id', name='uq_sync_user_device_operation_entity'),)
+
 
 Index('ix_lessons_group_status', Lesson.group_id, Lesson.status)
 Index('ix_versions_lesson_number', LessonVersion.lesson_id, LessonVersion.version_number)
+Index('ix_sync_user_processed', SyncRecord.user_id, SyncRecord.processed_at)

@@ -95,10 +95,10 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
     }),
-  register: (body: { name: string; email: string; password: string; preferred_language: Lang }) =>
+  register: (body: { name: string; email: string; password: string; preferred_language: Lang; account_role: 'admin' | 'student' }) =>
     request<{ access_token: string; user: User }>('/auth/register', {
       method: 'POST',
-      body: JSON.stringify({ ...body, email: body.email.trim().toLowerCase(), account_role: 'student' }),
+      body: JSON.stringify({ ...body, email: body.email.trim().toLowerCase() }),
     }),
   logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
   me: () => request<User>('/auth/me'),
@@ -124,12 +124,14 @@ export const api = {
   analyze: (id: number) => request<any>(`/lessons/${id}/analyze`, { method: 'POST' }),
   translate: (id: number, target_language: Lang) =>
     request<any>(`/lessons/${id}/translate`, { method: 'POST', body: JSON.stringify({ target_language }) }),
-  verify: (id: number, body: { translation_id: number; approved: boolean; edited_text?: string; native_review_status?: 'NOT_REVIEWED' | 'PENDING' | 'VERIFIED' | 'REJECTED' }) =>
+  verify: (id: number, body: { translation_id: number; approved: boolean; edited_text?: string; native_review_status?: 'NOT_REVIEWED' | 'PENDING' | 'REJECTED' }) =>
     request<LessonPack>(`/lessons/${id}/verify-translation`, { method: 'POST', body: JSON.stringify(body) }),
   tts: (id: number, target_language: Lang) =>
     request<any>(`/lessons/${id}/tts`, { method: 'POST', body: JSON.stringify({ target_language, speaker: 'classroom_teacher' }) }),
   practice: (id: number, language: Lang, count = 4) =>
     request<any[]>(`/lessons/${id}/generate-practice`, { method: 'POST', body: JSON.stringify({ language, count }) }),
+  approvePractice: (id: number, questionId: number, approved: boolean) =>
+    request<any>(`/lessons/${id}/practice/${questionId}/approve`, { method: 'POST', body: JSON.stringify({ approved }) }),
   worksheet: (id: number) => request<{ html: string; [key: string]: unknown }>(`/lessons/${id}/generate-worksheet`, { method: 'POST' }),
   flashcards: (id: number, language: Lang) =>
     request<any[]>(`/lessons/${id}/generate-flashcards`, { method: 'POST', body: JSON.stringify({ language }) }),
@@ -156,8 +158,8 @@ export const api = {
 
   studentLessons: () => request<LessonPack[]>('/student/lessons'),
   studentPackage: (id: number) => request<LessonPack>(`/student/lessons/${id}/package`),
-  attempt: (answers: Record<string, unknown>, lesson_version_id: number) =>
-    request<any>('/student/attempts', { method: 'POST', body: JSON.stringify({ answers, lesson_version_id }) }),
+  attempt: (body: { lesson_id: number; lesson_version_id: number; language: Lang; answers: Record<string, unknown> }) =>
+    request<any>('/student/attempts', { method: 'POST', body: JSON.stringify(body) }),
   progress: () => request<any>('/student/progress'),
 
   syncPush: (device_id: string, operations: any[]) =>
@@ -174,6 +176,12 @@ export function errorMessage(error: unknown): string {
       const problems = (error.details as any).problems;
       if (Array.isArray(problems) && problems.length) {
         return `${error.message} ${problems.map((item: string) => item.replaceAll('_', ' ').replaceAll(':', ': ')).join(' • ')}`;
+      }
+    }
+    if (error.details && typeof error.details === 'object') {
+      const runtime = (error.details as any).runtime_error;
+      if (typeof runtime === 'string' && runtime.trim()) {
+        return `${error.message} Technical detail: ${runtime.trim()}`;
       }
     }
     return error.message;

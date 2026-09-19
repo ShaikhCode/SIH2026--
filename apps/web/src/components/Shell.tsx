@@ -1,14 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { Activity, BookOpen, GraduationCap, LayoutDashboard, LogOut, Menu, Users, WifiOff, X } from 'lucide-react';
+import { Activity, BookOpen, ChevronDown, GraduationCap, LayoutDashboard, LogOut, Menu, School, Users, WifiOff, X } from 'lucide-react';
 import { useAuth } from '../features/auth/AuthContext';
-import { LANGS } from '../types';
+import { LANGS, type Lang } from '../types';
 
 export function Shell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [language, setLanguage] = useState<Lang>(() => (localStorage.getItem('bhashasaathi_language') as Lang) || user?.preferred_language || 'eng_Latn');
   const navigate = useNavigate();
-  const isAdmin = user?.account_role === 'admin';
+  const isCreator = user?.account_role === 'admin';
 
   useEffect(() => {
     const close = () => setOpen(false);
@@ -16,10 +17,16 @@ export function Shell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('resize', close);
   }, []);
 
-  const links = isAdmin
+  const setPreferredLanguage = (next: Lang) => {
+    setLanguage(next); localStorage.setItem('bhashasaathi_language', next);
+    window.dispatchEvent(new CustomEvent('bhashasaathi:language-changed', { detail: next }));
+  };
+
+  const links = isCreator
     ? [
-        { to: '/dashboard', label: 'Dashboard', Icon: LayoutDashboard },
+        { to: '/dashboard', label: 'Workspace', Icon: LayoutDashboard },
         { to: '/groups', label: 'Classrooms', Icon: Users },
+        { to: '/student', label: 'My Learning', Icon: GraduationCap },
         { to: '/offline', label: 'Offline Center', Icon: WifiOff },
         { to: '/diagnostics', label: 'Diagnostics', Icon: Activity },
       ]
@@ -38,22 +45,28 @@ export function Shell({ children }: { children: ReactNode }) {
         <div className="side-brand-copy"><strong>BhashaSaathi</strong><span>Translate the classroom, not just the words.</span></div>
         <button className="mobile-close" onClick={() => setOpen(false)} aria-label="Close navigation"><X size={18} /></button>
       </div>
-      <div className="role-badge">{isAdmin ? 'EDUCATOR' : 'LEARNER'}</div>
+      <div className="role-badge"><School size={12} /> {isCreator ? 'CREATOR' : 'LEARNER'}</div>
       <nav className="side-nav">
         {links.map(({ to, label, Icon }) => <NavLink key={to} to={to} onClick={() => setOpen(false)} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon size={18} /><span>{label}</span></NavLink>)}
       </nav>
       <div className="side-bottom">
-        <div className="user-mini"><div className="avatar">{user?.name?.slice(0, 1).toUpperCase()}</div><div><strong>{user?.name}</strong><span>{user ? LANGS[user.preferred_language]?.native : ''}</span></div></div>
+        <div className="language-control">
+          <label htmlFor="workspace-language">Language</label>
+          <div className="language-select-wrap"><LanguagesIcon /><select id="workspace-language" value={language} onChange={(e) => setPreferredLanguage(e.target.value as Lang)}>{Object.entries(LANGS).map(([code, info]) => <option key={code} value={code}>{info.native} · {info.name}</option>)}</select><ChevronDown size={14} /></div>
+        </div>
+        <div className="user-mini"><div className="avatar">{user?.name?.slice(0, 1).toUpperCase()}</div><div><strong>{user?.name}</strong><span>{isCreator ? 'Creator account' : 'Student account'}</span></div></div>
         <button className="logout-btn" onClick={signOut}><LogOut size={16} /> Sign out</button>
       </div>
     </aside>
     {open && <button className="scrim" aria-label="Close navigation" onClick={() => setOpen(false)} />}
     <main className="main">
-      <div className="mobile-topbar"><button className="menu-btn" onClick={() => setOpen(true)} aria-label="Open navigation"><Menu size={21} /></button><div className="mobile-brand"><div className="brand-mark small">भा</div><strong>BhashaSaathi</strong></div></div>
+      <div className="mobile-topbar"><button className="menu-btn" onClick={() => setOpen(true)} aria-label="Open navigation"><Menu size={21} /></button><div className="mobile-brand"><div className="brand-mark small">भा</div><strong>BhashaSaathi</strong></div><div className="mobile-language"><select value={language} onChange={(e) => setPreferredLanguage(e.target.value as Lang)} aria-label="Language">{Object.entries(LANGS).map(([code, info]) => <option key={code} value={code}>{info.native}</option>)}</select></div></div>
       {children}
     </main>
   </div>;
 }
+
+function LanguagesIcon() { return <span className="language-icon"><BookOpen size={14} /></span>; }
 
 export function Page({ eyebrow, title, subtitle, actions, children }: { eyebrow?: string; title: string; subtitle?: string; actions?: ReactNode; children: ReactNode }) {
   return <div className="page"><header className="page-head"><div className="page-heading"><div className="eyebrow">{eyebrow}</div><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div>{actions && <div className="head-actions">{actions}</div>}</header>{children}</div>;

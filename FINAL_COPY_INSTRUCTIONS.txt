@@ -1,51 +1,81 @@
-BHASHASAATHI FINAL COPY INSTRUCTIONS
+BHASASAATHI FINAL RESULT — COPY INSTRUCTIONS
 
-1) Keep your existing folder:
-   D:\git\BhashaSaathi_Local_NoDocker
+KEEP THESE FROM YOUR CURRENT INSTALLATION
+  apps\api\.venv\
+  apps\api\models\
+  apps\api\.env
 
-2) Before copying, STOP FastAPI/Vite terminals.
+REPLACE THE CODE
+  Copy the contents of this ZIP over:
+  D:\git\BhashaSaathi_Local_NoDocker
 
-3) Extract this final ZIP somewhere temporary.
+Do NOT rename or move model files.
+Do NOT delete your .venv.
+Do NOT overwrite your private .env.
 
-4) Copy EVERYTHING from the extracted BhashaSaathi_FINAL folder into:
-   D:\git\BhashaSaathi_Local_NoDocker
+FIRST RUN — BACKEND
 
-5) Replace code files when Windows asks.
+D:
+cd \git\BhashaSaathi_Local_NoDocker\apps\api
+.\.venv\Scripts\activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 
-6) DO NOT delete/replace:
-   apps\api\.venv\
-   apps\api\models\
-   apps\api\.env
+cd ..\..
+python scripts\check_environment.py
+python scripts\verify_models.py
 
-   Your model weights stay exactly where they are.
+The 18 Sep 2026 diagnostic handoff proved real IndicTrans2 EN->Hindi and Hindi->EN inference and real faster-whisper checkpoint loading. It also proved the Whisper checkpoint is a CTranslate2/faster-whisper model and must not be renamed into a Transformers checkpoint. The current remaining TTS support dependency is the local FLAN-T5 description tokenizer.
 
-7) Start backend:
-   cd D:\git\BhashaSaathi_Local_NoDocker\apps\api
-   .\.venv\Scripts\activate
-   pip install -r requirements.txt
-   python ..\..\scripts\reset_local_db.py
-   alembic upgrade head
-   python ..\..\scripts\seed_demo.py
-   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+TTS SUPPORT (ONE TIME)
 
-8) New terminal for frontend:
-   cd D:\git\BhashaSaathi_Local_NoDocker\apps\web
-   npm install
-   npm run dev
+From repository root:
+  python scripts\download_tts_support.py
 
-9) Open:
-   http://localhost:5173
+This downloads only tokenizer/config assets for google/flan-t5-large. It does NOT download full FLAN-T5 model weights.
 
-10) Demo teacher:
-   teacher@bhashasaathi.local
-   Demo@1234
+MODEL LAB — RUN BEFORE OPENING THE UI
 
-11) Demo student:
-   student@bhashasaathi.local
-   Demo@1234
+  python scripts\model_lab.py --skip-tts
 
-12) If TTS support tokenizer is missing:
-   cd D:\git\BhashaSaathi_Local_NoDocker\apps\api
-   python ..\..\scripts\download_tts_support.py
+After TTS support is installed:
+  python scripts\model_lab.py
 
-The final source fixes the frontend [object Object] error display, local .local demo-email rejection, offline attempt queue marking, actual offline attempt processing, cached audio playback, published worksheet metadata, concept flashcards, and the missing frontend product screens.
+For a real Hindi recording:
+  python scripts\model_lab.py --audio path\to\hindi_recording.wav --stt-language hin_Deva --skip-tts
+
+DATABASE
+
+  cd apps\api
+  python ..\..\scripts\reset_local_db.py
+  alembic upgrade head
+  python ..\..\scripts\seed_demo.py
+  python ..\..\scripts\run_smoke_test.py
+
+START API
+
+  uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+
+START WEB — SECOND POWERSHELL
+
+  D:
+  cd \git\BhashaSaathi_Local_NoDocker\apps\web
+  npm install
+  npm run build
+  npm run dev
+
+OPEN
+  http://localhost:5173
+
+DEMO ACCOUNTS
+  Teacher: teacher@bhashasaathi.local / Demo@1234
+  Student: student@bhashasaathi.local / Demo@1234
+
+FINAL PRODUCT FLOW
+  Login -> Classroom -> Lesson -> Source/STT -> Understand -> Concepts ->
+  English + Santhali -> Translation Guard -> Teacher approval ->
+  Santhali practice approval -> Worksheet -> Flashcards -> Santhali TTS ->
+  Publish -> Student -> Santhali -> Read/Listen/Practice -> Download ->
+  Offline -> Answer -> Sync
+
+PUBLISH IS INTENTIONALLY BLOCKED UNTIL THE REQUIRED PACKAGE IS COMPLETE.

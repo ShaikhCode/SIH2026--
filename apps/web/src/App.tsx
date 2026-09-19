@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useAuth } from './features/auth/AuthContext';
 import { Shell } from './components/Shell';
 import LoginPage from './pages/LoginPage';
+import LandingPage from './pages/LandingPage';
 import RegisterPage from './pages/RegisterPage';
 import AdminDashboardPage from './pages/AdminDashboardPage';
 import GroupsPage from './pages/GroupsPage';
@@ -23,7 +24,7 @@ function Protected({ children }: { children: ReactNode }) {
 function Role({ role, children }: { role: 'admin' | 'student'; children: ReactNode }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  if (user.account_role === role) return <>{children}</>;
+  if (user.account_role === role || (role === 'student' && user.account_role === 'admin')) return <>{children}</>;
   return <Navigate to={user.account_role === 'admin' ? '/dashboard' : '/student'} replace />;
 }
 
@@ -31,7 +32,7 @@ export default function App() {
   return <Routes>
     <Route path="/login" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
-    <Route path="/" element={<Navigate to="/login" replace />} />
+    <Route path="/" element={<LandingPage />} />
     <Route path="/dashboard" element={<Protected><Role role="admin"><AdminDashboardPage /></Role></Protected>} />
     <Route path="/groups" element={<Protected><GroupsPage /></Protected>} />
     <Route path="/groups/:id" element={<Protected><GroupPage /></Protected>} />

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, Check, FileText, Layers, Mic, Play, Printer, RefreshCw, Send, ShieldCheck, Upload, Volume2 } from 'lucide-react';
+import {
+  ArrowLeft, ArrowRight, Check, ChevronDown, FileText, Layers, Mic, Pause,
+  Play, Printer, RefreshCw, Send, ShieldCheck, Upload, Volume2, XCircle,
+} from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Page, SectionTitle } from '../components/Shell';
-import { Button, Busy, Card, Field, Status, useToast } from '../components/UI';
+import { Button, Busy, Card, Field, Modal, Status, useToast } from '../components/UI';
 import { api, errorMessage } from '../lib/api';
-import type { Lang, LessonPack, Translation, VersionSummary } from '../types';
+import type { Lang, LessonPack, Practice, Translation, VersionSummary } from '../types';
 
 const STEPS = [
   { key: 'source', label: 'Source', short: 'Input' },
@@ -15,7 +18,9 @@ const STEPS = [
   { key: 'review', label: 'Review', short: 'Publish' },
 ] as const;
 
-const languageLabel = (lang: Lang) => lang === 'sat_Olck' ? 'Santhali' : lang === 'eng_Latn' ? 'English' : 'Hindi';
+const LANGUAGES: Lang[] = ['eng_Latn', 'sat_Olck'];
+const label = (lang: Lang) => lang === 'eng_Latn' ? 'English' : lang === 'sat_Olck' ? 'Santhali' : 'Hindi';
+const nativeLabel = (lang: Lang) => lang === 'sat_Olck' ? 'ᱥᱟᱱᱛᱟᱲᱤ' : lang === 'eng_Latn' ? 'English' : 'हिन्दी';
 
 export default function LessonBuilderPage() {
   const { id } = useParams();
@@ -39,9 +44,13 @@ export default function LessonBuilderPage() {
   const [recording, setRecording] = useState(false);
   const [media, setMedia] = useState<MediaRecorder | null>(null);
   const [artifactUrls, setArtifactUrls] = useState<Record<number, string>>({});
+  const [worksheetHtml, setWorksheetHtml] = useState('');
+  const [worksheetOpen, setWorksheetOpen] = useState(false);
   const [lastSaved, setLastSaved] = useState<number | null>(null);
+  const [activePracticeLanguage, setActivePracticeLanguage] = useState<Lang>('hin_Deva');
   const autosaveTimer = useRef<number | null>(null);
   const hydrated = useRef(false);
+  const worksheetFrame = useRef<HTMLIFrameElement>(null);
 
   const refresh = useCallback(async () => {
     const current = await api.lesson(lessonId);
@@ -52,58 +61,77 @@ export default function LessonBuilderPage() {
     setTranscript(current.version.clean_transcript || '');
     setOutcome(current.version.learning_objectives[0] || '');
     setConcepts(current.version.concepts.map((concept) => concept.label));
-    const selected = current.translations.find((item) => item.language === target);
-    setEditedTranslation(selected?.text || '');
     hydrated.current = true;
-  }, [lessonId, target]);
+    return current;
+  }, [lessonId]);
 
   const loadVersions = useCallback(async () => {
-    try { setVersions(await api.versions(lessonId)); } catch { /* optional */ }
+    try { setVersions(await api.versions(lessonId)); } catch { /* diagnostics only */ }
   }, [lessonId]);
 
   useEffect(() => {
-    (async () => {
+    void (async () => {
       try { await refresh(); await loadVersions(); setError(''); }
       catch (err) { setError(errorMessage(err)); }
     })();
   }, [refresh, loadVersions]);
 
-  const currentTranslation = useMemo(() => pack?.translations.find((item) => item.language === target), [pack, target]);
-  const canPublish = useMemo(() => {
-    if (!pack?.translations.length) return false;
-    return pack.translations.every((item) => item.verification_status === 'TEACHER_APPROVED');
+  const currentTranslation = useMemo(
+    () => pack?.translations.find((item) => item.language === target),
+    [pack, target],
+  );
+
+  const translationByLanguage = useMemo(() => {
+    const map = new Map<Lang, Translation>();
+    pack?.translations.forEach((item) => map.set(item.language, item));
+    return map;
   }, [pack]);
 
   useEffect(() => {
-    if (currentTranslation) setEditedTranslation(currentTranslation.text);
-    else setEditedTranslation('');
-  }, [currentTranslation?.id]);
+    setEditedTranslation(currentTranslation?.text || '');
+  }, [currentTranslation?.id, currentTranslation?.text]);
+
+  useEffect(() => {
+    return () => {
+      (Object.values(artifactUrls) as string[]).forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
 
   useEffect(() => {
     if (!pack) return;
     let cancelled = false;
-    (async () => {
-      const audioArtifacts = pack.artifacts.filter((artifact) => artifact.type === 'audio');
-      for (const artifact of audioArtifacts) {
+    const loadCachedAudio = async () => {
+      for (const artifact of pack.artifacts.filter((item) => item.type === 'audio')) {
         if (artifactUrls[artifact.id]) continue;
         try {
           const blob = await api.fetchArtifact(artifact.id);
-          if (!cancelled) setArtifactUrls((old) => old[artifact.id] ? old : ({ ...old, [artifact.id]: URL.createObjectURL(blob) }));
+          if (!cancelled) {
+            const url = URL.createObjectURL(blob);
+            setArtifactUrls((old) => old[artifact.id] ? old : { ...old, [artifact.id]: url });
+          }
         } catch {
-          // An unavailable audio file should not block the lesson builder.
+          // Audio is optional; the text lesson remains usable.
         }
       }
-    })();
+    };
+    void loadCachedAudio();
     return () => { cancelled = true; };
   }, [pack?.version.id, pack?.artifacts.length]);
 
   const saveDraft = useCallback(async (silent = false) => {
     if (!hydrated.current) return;
     try {
-      const updated = await api.patchLesson(lessonId, { title, topic, source_text: source, clean_transcript: transcript, learning_outcome: outcome, concepts });
+      const updated = await api.patchLesson(lessonId, {
+        title: title.trim(),
+        topic: topic.trim(),
+        source_text: source,
+        clean_transcript: transcript,
+        learning_outcome: outcome,
+        concepts,
+      });
       setPack(updated);
       setLastSaved(Date.now());
-      if (!silent) { setNotice('Draft saved.'); push('Draft saved.'); }
+      if (!silent) push('Draft saved.');
     } catch (err) {
       if (!silent) setError(errorMessage(err));
     }
@@ -112,12 +140,14 @@ export default function LessonBuilderPage() {
   useEffect(() => {
     if (!hydrated.current) return;
     if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current);
-    autosaveTimer.current = window.setTimeout(() => { void saveDraft(true); }, 1400);
+    autosaveTimer.current = window.setTimeout(() => void saveDraft(true), 1200);
     return () => { if (autosaveTimer.current) window.clearTimeout(autosaveTimer.current); };
   }, [title, topic, source, transcript, outcome, concepts, saveDraft]);
 
-  const run = async (label: string, action: () => Promise<void>) => {
-    setBusy(label); setError(''); setNotice('');
+  const run = async (labelText: string, action: () => Promise<void>) => {
+    setBusy(labelText);
+    setError('');
+    setNotice('');
     try { await action(); }
     catch (err) { setError(errorMessage(err)); }
     finally { setBusy(''); }
@@ -132,143 +162,279 @@ export default function LessonBuilderPage() {
     push('Learning outcome and concepts are ready.');
   });
 
-  const translate = () => run(`Preparing ${languageLabel(target)}…`, async () => {
+  const translateOne = (language: Lang) => run(`Preparing ${label(language)}…`, async () => {
     await saveDraft(true);
-    await api.translate(lessonId, target);
+    await api.translate(lessonId, language);
     await refresh();
-    push(`${languageLabel(target)} translation is ready for review.`);
+    setTarget(language);
+    push(`${label(language)} translation is ready for teacher review.`);
   });
 
-  const saveTranslation = async () => {
-    if (!currentTranslation) return;
-    await run('Saving review…', async () => {
-      const updated = await api.verify(lessonId, { translation_id: currentTranslation.id, approved: true, edited_text: editedTranslation, native_review_status: target === 'sat_Olck' ? 'PENDING' : 'NOT_REVIEWED' });
-      setPack(updated);
-      push(`${languageLabel(target)} translation approved by teacher.`);
-    });
-  };
+  const translateBoth = () => run('Preparing English + Santhali…', async () => {
+    await saveDraft(true);
+    const results = await Promise.allSettled(LANGUAGES.map((language) => api.translate(lessonId, language)));
+    const failures = results.filter((result) => result.status === 'rejected');
+    await refresh();
+    if (failures.length) {
+      const first = failures[0];
+      throw first.status === 'rejected' ? first.reason : new Error('Translation failed.');
+    }
+    push('English and Santhali translations are ready for review.');
+  });
 
-  const markNativeVerified = async () => {
-    if (!currentTranslation || target !== 'sat_Olck') return;
-    await run('Saving language review…', async () => {
-      const updated = await api.verify(lessonId, { translation_id: currentTranslation.id, approved: true, edited_text: editedTranslation, native_review_status: 'VERIFIED' });
-      setPack(updated);
-      push('Santhali native-review state marked verified.');
+  const saveTranslation = () => run('Saving teacher approval…', async () => {
+    if (!currentTranslation) throw new Error(`Generate ${label(target)} before approving it.`);
+    const updated = await api.verify(lessonId, {
+      translation_id: currentTranslation.id,
+      approved: true,
+      edited_text: editedTranslation,
+      native_review_status: target === 'sat_Olck' ? 'PENDING' : 'NOT_REVIEWED',
     });
-  };
+    setPack(updated);
+    push(`${label(target)} approved by the educator.`);
+  });
 
-  const generatePractice = (language: Lang) => run('Preparing practice…', async () => {
+  const generatePractice = (language: Lang) => run(`Preparing ${label(language)} practice…`, async () => {
     await api.practice(lessonId, language, 4);
     await refresh();
-    push(`${languageLabel(language)} practice is ready.`);
+    setActivePracticeLanguage(language);
+    push(`${label(language)} practice draft is ready for teacher approval.`);
+  });
+
+  const approvePractice = (question: Practice) => run('Saving practice approval…', async () => {
+    await api.approvePractice(lessonId, question.id, true);
+    await refresh();
+    push('Practice question approved.');
   });
 
   const generateWorksheet = () => run('Preparing worksheet…', async () => {
     const result = await api.worksheet(lessonId);
-    const popup = window.open('', '_blank', 'noopener,noreferrer');
-    if (!popup) throw new Error('The worksheet window was blocked. Allow pop-ups for localhost:5173.');
-    popup.document.write(result.html);
-    popup.document.close();
-    push('Worksheet preview opened.');
+    setWorksheetHtml(result.html);
+    setWorksheetOpen(true);
+    push('Worksheet preview is ready.');
   });
 
-  const generateFlashcards = (language: Lang) => run('Preparing flashcards…', async () => {
+  const generateFlashcards = (language: Lang) => run(`Preparing ${label(language)} flashcards…`, async () => {
     await api.flashcards(lessonId, language);
     await refresh();
-    push('Flashcards are ready.');
+    push('Flashcards refreshed from lesson concepts.');
   });
 
-  const makeTTS = (language: Lang) => run(`Creating ${languageLabel(language)} audio…`, async () => {
+  const makeTTS = (language: Lang) => run(`Creating ${label(language)} audio…`, async () => {
     const result = await api.tts(lessonId, language);
+    const blob = await api.fetchArtifact(result.artifact_id);
+    const url = URL.createObjectURL(blob);
+    setArtifactUrls((old) => ({ ...old, [result.artifact_id]: url }));
     await refresh();
-    if (result?.artifact_id) {
-      try { const blob = await api.fetchArtifact(result.artifact_id); setArtifactUrls((old) => ({ ...old, [result.artifact_id]: URL.createObjectURL(blob) })); } catch { /* play through refresh when possible */ }
-    }
-    push(`${languageLabel(language)} audio is ready.`);
+    push(`${label(language)} audio is ready.`);
   });
 
   const createVersion = () => run('Saving new version…', async () => {
     const updated = await api.newVersion(lessonId, { source_text: source, clean_transcript: transcript, learning_outcome: outcome, concepts });
-    setPack(updated); await loadVersions(); setStep(0); push(`Version ${updated.version.version_number} created.`);
+    setPack(updated);
+    await loadVersions();
+    setStep(0);
+    push(`Version ${updated.version.version_number} created.`);
   });
 
   const rollback = (versionId: number) => run('Restoring version…', async () => {
     const updated = await api.rollback(lessonId, versionId);
-    setPack(updated); await loadVersions(); push(`Version ${versionId} restored.`);
+    setPack(updated);
+    await loadVersions();
+    push(`Published version ${updated.version.version_number} restored.`);
   });
 
   const publish = () => run('Publishing lesson…', async () => {
-    if (!canPublish) throw new Error('Publish is blocked. Approve every prepared translation first, including the Santhali showcase translation.');
+    if (!readiness.publish) throw new Error(`Publish is blocked: ${readiness.problems.join(' • ')}`);
     const updated = await api.publish(lessonId);
-    setPack(updated); await loadVersions(); push('Lesson published. Students can now sync it for offline use.');
+    setPack(updated);
+    await loadVersions();
+    push('Lesson published. Students can now download it for offline learning.');
   });
 
   const record = async () => {
-    if (recording) { media?.stop(); setRecording(false); return; }
+    if (recording) {
+      media?.stop();
+      setRecording(false);
+      return;
+    }
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      setError('This browser does not support microphone recording. Use the text editor or upload a supported audio file from the API tools.'); return;
+      setError('This browser cannot record audio. Use the text editor or upload an audio file.');
+      return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
       const chunks: BlobPart[] = [];
       recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         stream.getTracks().forEach((track) => track.stop());
-        setRecording(false);
-        setBusy('Transcribing Hindi audio…'); setError('');
-        try {
-          const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
-          const extension = (recorder.mimeType || '').includes('ogg') ? 'ogg' : 'webm';
-          const file = new File([blob], `teacher-recording.${extension}`, { type: blob.type });
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const extension = blob.type.includes('ogg') ? 'ogg' : 'webm';
+        const file = new File([blob], `teacher-recording.${extension}`, { type: blob.type });
+        void run('Transcribing recording…', async () => {
           const result = await api.transcribe(lessonId, file);
-          setTranscript(result.text || ''); setSource(result.text || '');
-          await refresh(); push('Transcript is ready. Review it before analysis.');
-        } catch (err) { setError(errorMessage(err)); }
-        finally { setBusy(''); }
+          setTranscript(result.text || '');
+          setSource(result.text || '');
+          await refresh();
+          push('Transcript prepared. Edit it before continuing.');
+        });
       };
-      recorder.start(); setMedia(recorder); setRecording(true); push('Recording started. Keep it short and clear.');
-    } catch { setError('Microphone access was denied. Check browser permissions and try again.'); }
+      setMedia(recorder);
+      recorder.start();
+      setRecording(true);
+    } catch (err) {
+      setError(errorMessage(err));
+    }
   };
 
-  const uploadAudio = async (file: File | undefined) => {
+  const uploadAudio = (file?: File) => {
     if (!file) return;
-    await run('Transcribing audio…', async () => {
+    void run('Transcribing audio…', async () => {
       const result = await api.transcribe(lessonId, file);
-      setTranscript(result.text || ''); setSource(result.text || ''); await refresh(); push('Uploaded audio transcribed.');
+      setTranscript(result.text || '');
+      setSource(result.text || '');
+      await refresh();
+      push('Transcript prepared. Edit it before continuing.');
     });
   };
 
-  const next = () => setStep((current) => Math.min(STEPS.length - 1, current + 1));
+  const languageReady = LANGUAGES.every((language) => {
+    const translation = translationByLanguage.get(language);
+    return Boolean(translation?.text.trim());
+  });
+
+  const languageApproved = LANGUAGES.every((language) =>
+    translationByLanguage.get(language)?.verification_status === 'TEACHER_APPROVED',
+  );
+
+  const approvedPractice = (pack?.practice_all || []).filter((question) => question.approved);
+  const approvedSanthaliPractice = approvedPractice.filter((question) => question.language === 'sat_Olck');
+  const practiceDrafts = (pack?.practice_all || []).filter((question) => !question.approved);
+  const santhaliAudioReady = Boolean(pack?.artifacts.some((artifact) => artifact.type === 'audio' && artifact.language === 'sat_Olck'));
+
+  const readiness = useMemo(() => {
+    const problems: string[] = [];
+    if (!title.trim()) problems.push('Add a title');
+    if (!source.trim() && !transcript.trim()) problems.push('Add lesson source');
+    if (!outcome.trim()) problems.push('Prepare learning outcome');
+    if (!concepts.length) problems.push('Prepare concepts');
+    if (!translationByLanguage.get('eng_Latn')?.text.trim()) problems.push('Generate English');
+    if (!translationByLanguage.get('sat_Olck')?.text.trim()) problems.push('Generate Santhali');
+    if (translationByLanguage.get('eng_Latn')?.verification_status !== 'TEACHER_APPROVED') problems.push('Approve English');
+    if (translationByLanguage.get('sat_Olck')?.verification_status !== 'TEACHER_APPROVED') problems.push('Approve Santhali');
+    if (!approvedPractice.length) problems.push('Approve at least one practice question');
+    if (!approvedSanthaliPractice.length) problems.push('Approve at least one Santhali practice question');
+    if (!santhaliAudioReady) problems.push('Prepare Santhali audio');
+    return { publish: problems.length === 0, problems };
+  }, [title, source, transcript, outcome, concepts.length, translationByLanguage, approvedPractice.length, approvedSanthaliPractice.length, santhaliAudioReady]);
+
+  const next = () => {
+    if (step === 0 && (!title.trim() || !(source.trim() || transcript.trim()))) {
+      setError('Complete the lesson title and add the teacher source first.');
+      return;
+    }
+    if (step === 1 && (!outcome.trim() || !concepts.length)) {
+      setError('Run “Prepare learning context” before continuing.');
+      return;
+    }
+    if (step === 2 && (!outcome.trim() || !concepts.length)) {
+      setError('Prepare the learning outcome and at least one concept.');
+      return;
+    }
+    if (step === 3 && !languageReady) {
+      setError('Generate both English and Santhali before leaving the Languages step.');
+      return;
+    }
+    if (step === 4 && !practiceDrafts.length && !approvedPractice.length) {
+      setError('Generate practice, then approve at least one question.');
+      return;
+    }
+    setError('');
+    setStep((current) => Math.min(STEPS.length - 1, current + 1));
+  };
+
   const back = () => setStep((current) => Math.max(0, current - 1));
 
-  if (!pack) return <Page title="Opening lesson…"><Card>{error ? <><Status tone="danger">{error}</Status><Button variant="secondary" onClick={() => { setError(''); void refresh(); }}>Retry</Button></> : <div className="loading-inline"><RefreshCw size={18} className="spin" /> Loading lesson data…</div>}</Card></Page>;
+  if (!pack) {
+    return <Page title="Opening lesson…"><Card>{error ? <div className="stack-sm"><Status tone="danger">{error}</Status><Button onClick={() => { setError(''); void refresh(); }}><RefreshCw size={15} /> Retry</Button></div> : <Busy label="Loading lesson workspace…" />}</Card></Page>;
+  }
 
-  return <Page eyebrow={`${pack.lesson.grade} · ${pack.lesson.subject}`} title={pack.lesson.title} subtitle="AI prepares. The educator decides. The learner learns." actions={<div className="head-action-row"><Button variant="ghost" onClick={() => navigate(`/groups/${pack.lesson.group_id}`)}><ArrowLeft size={16} /> Classroom</Button><Button variant="secondary" onClick={() => void saveDraft()} disabled={!!busy}>Save now</Button></div>}>
-    <div className="builder-topbar"><div className="builder-status"><span className={`status-dot ${pack.lesson.status === 'PUBLISHED' ? 'published' : ''}`}></span><strong>{pack.lesson.status.replaceAll('_', ' ')}</strong><span>Version {pack.version.version_number}</span>{lastSaved && <small>Saved {new Date(lastSaved).toLocaleTimeString()}</small>}</div><div className="builder-actions"><Button variant="ghost" onClick={createVersion} disabled={!!busy}><Layers size={15} /> New version</Button></div></div>
-    {busy && <Busy label={busy} />}{error && <Card className="error-card"><Status tone="danger">{error}</Status><button onClick={() => setError('')}>Dismiss</button></Card>}{notice && <Status tone="success">{notice}</Status>}
-    <div className="stepper">{STEPS.map((item, index) => <button key={item.key} onClick={() => setStep(index)} className={`stepper-item ${step === index ? 'active' : ''} ${index < step ? 'complete' : ''}`}><span>{index < step ? <Check size={14} /> : index + 1}</span><div><strong>{item.label}</strong><small>{item.short}</small></div></button>)}</div>
-    <div className="builder-layout">
-      <div className="builder-main">
-        {step === 0 && <Card><SectionTitle title="1. Original lesson" subtitle="Keep the teacher's content as the source of truth." /><div className="info-banner"><FileText size={17} /><div><strong>Source preservation</strong><span>AI suggestions never replace this original text.</span></div></div><div className="form-stack"><Field label="Lesson title"><input value={title} onChange={(e) => setTitle(e.target.value)} /></Field><Field label="Topic" hint="Optional but useful for curriculum context."><input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Plants and Water" /></Field><Field label="Teacher lesson"><textarea rows={10} value={source} onChange={(e) => setSource(e.target.value)} placeholder="आज हम सीखेंगे कि पौधों को पानी की आवश्यकता क्यों होती है…" /></Field></div><div className="recording-box"><div><strong>Voice input</strong><span>Teacher speaks Hindi → Whisper transcript → editable text.</span></div><div className="button-row"><Button variant={recording ? 'danger' : 'secondary'} onClick={() => void record()} disabled={!!busy}><Mic size={16} />{recording ? 'Stop recording' : 'Record Hindi'}</Button><label className="btn btn-ghost file-btn"><Upload size={16} /> Upload audio<input type="file" accept="audio/*,.webm" onChange={(e) => void uploadAudio(e.target.files?.[0])} /></label></div></div>{transcript && <div className="subcard"><div className="subcard-head"><strong>Editable transcript</strong><Status tone="info">Whisper output</Status></div><textarea rows={7} value={transcript} onChange={(e) => setTranscript(e.target.value)} /></div>}<div className="wizard-nav"><Button onClick={() => setStep(1)} disabled={!source.trim()}>Continue <ArrowRight size={16} /></Button></div></Card>}
+  return <>
+    <Page
+      eyebrow={`${pack.lesson.grade} · ${pack.lesson.subject}`}
+      title={pack.lesson.title}
+      subtitle="Build once. Review carefully. Publish a complete multilingual lesson pack."
+      actions={<div className="head-action-row"><Button variant="ghost" onClick={() => navigate(`/groups/${pack.lesson.group_id}`)}><ArrowLeft size={16} /> Classroom</Button>{lastSaved && <Status tone="success">Saved {new Date(lastSaved).toLocaleTimeString()}</Status>}<Status tone={readiness.publish ? 'success' : 'warning'}>{readiness.publish ? 'Ready' : 'Draft'}</Status></div>}
+    >
+      {busy && <div className="busy-bar"><Busy label={busy} /></div>}
+      {error && <div className="error-banner"><XCircle size={18} /><div><strong>We couldn't complete that step.</strong><span>{error}</span></div><button onClick={() => setError('')} aria-label="Dismiss"><XCircle size={15} /></button></div>}
+      {notice && <div className="success-banner"><Check size={18} />{notice}</div>}
 
-        {step === 1 && <Card><SectionTitle title="2. Understand the lesson" subtitle="Create learning context before translation." /><div className="context-card"><div className="context-icon"><ShieldCheck size={19} /></div><div><strong>Teacher meaning stays intact</strong><p>The system extracts a learning outcome, explanation and activity suggestions without rewriting your source.</p></div></div><Field label="Learning outcome"><textarea rows={5} value={outcome} onChange={(e) => setOutcome(e.target.value)} placeholder="Learner can explain why plants need water to live and grow." /></Field><div className="button-row"><Button onClick={() => void analyze()} disabled={!!busy || !source.trim()}><RefreshCw size={16} /> Analyze with lesson intelligence</Button><Button variant="ghost" onClick={() => setStep(2)}>Edit manually</Button></div><div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div></Card>}
-
-        {step === 2 && <Card><SectionTitle title="3. Concepts" subtitle="Concepts are reused across translation, practice, flashcards and assessment." />{concepts.length ? <div className="concept-editor">{concepts.map((concept, index) => <div className="concept-editor-row" key={`${concept}-${index}`}><span>{index + 1}</span><input value={concept} onChange={(e) => setConcepts(concepts.map((old, i) => i === index ? e.target.value : old))} /><button onClick={() => setConcepts(concepts.filter((_, i) => i !== index))} aria-label={`Remove ${concept}`}>&times;</button></div>)}</div> : <div className="empty compact"><div className="empty-icon"><Layers size={17} /></div><h3>No concepts yet</h3><p>Run analysis or add the core learning concepts manually.</p></div>}<div className="button-row"><Button variant="secondary" onClick={() => setConcepts([...concepts, 'New concept'])}>+ Add concept</Button><Button variant="ghost" onClick={() => void analyze()}>Refresh from source</Button></div><div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next} disabled={!concepts.length}>Continue <ArrowRight size={16} /></Button></div></Card>}
-
-        {step === 3 && <Card><SectionTitle title="4. Languages & Translation Guard" subtitle="Generate English and Santhali separately so each output can be reviewed." /><div className="language-tabs">{(['eng_Latn', 'sat_Olck'] as Lang[]).map((lang) => <button key={lang} className={target === lang ? 'selected' : ''} onClick={() => setTarget(lang)}><strong>{languageLabel(lang)}</strong><span>{lang === 'sat_Olck' ? 'ᱥᱟᱱᱛᱟᱲᱤ · Ol Chiki' : 'English · Latin'}</span></button>)}</div><div className="translation-review-editor"><div className="translation-column"><div className="translation-head"><span>Original Hindi</span><small>Teacher source</small></div><div className="translation-text original">{transcript || source || 'No lesson source yet.'}</div></div><div className="translation-column"><div className="translation-head"><span>{languageLabel(target)}</span><small>{currentTranslation ? 'Reviewable output' : 'Not prepared'}</small></div><textarea rows={12} value={editedTranslation} onChange={(e) => setEditedTranslation(e.target.value)} placeholder={`Generate ${languageLabel(target)} to review it here…`} /></div></div><div className="translation-actions"><Button onClick={() => void translate()} disabled={!!busy || !source.trim()}><RefreshCw size={16} /> Generate {languageLabel(target)}</Button>{currentTranslation && <Button variant="secondary" onClick={() => void saveTranslation()} disabled={!!busy || !editedTranslation.trim()}><Check size={16} /> Approve translation</Button>}{currentTranslation?.flags?.length ? <Status tone="warning">{currentTranslation.flags.length} guard flag(s) need attention.</Status> : currentTranslation ? <Status tone="success">Automated checks passed. Teacher review still required.</Status> : <Status>Generate both languages before publishing.</Status>}</div>{currentTranslation && <div className="guard-panel-large"><div className="guard-summary"><div><span>Confidence</span><strong>{Math.round(currentTranslation.confidence * 100)}%</strong></div><div><span>Source leakage</span><strong>{currentTranslation.validation?.source_leakage ? 'Detected' : 'No'}</strong></div><div><span>Numbers</span><strong>{currentTranslation.validation?.number_mismatch ? 'Mismatch' : 'Preserved'}</strong></div><div><span>Teacher state</span><strong>{currentTranslation.verification_status.replaceAll('_', ' ')}</strong></div></div>{currentTranslation.flags.length > 0 && <div className="flag-list">{currentTranslation.flags.map((flag) => <span key={flag}>{flag.replaceAll('_', ' ')}</span>)}</div>}{target === 'sat_Olck' && <div className="native-review"><div><strong>Santhali native review</strong><span>{currentTranslation.native_review_status === 'VERIFIED' ? 'Verified by reviewer' : 'AI output is not automatically native-verified.'}</span></div>{currentTranslation.native_review_status !== 'VERIFIED' && <Button variant="ghost" onClick={() => void markNativeVerified()} disabled={!!busy}>Mark native review verified</Button>}</div>}</div>}<div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div></Card>}
-
-        {step === 4 && <Card><SectionTitle title="5. Activities, worksheets & audio" subtitle="Create classroom support from the approved lesson concepts." /><div className="action-card-grid"><Card className="action-card"><BookIcon /><strong>Practice</strong><span>Generate MCQs from concepts.</span><div className="button-row"><Button variant="secondary" onClick={() => void generatePractice('hin_Deva')} disabled={!!busy}>Hindi</Button><Button variant="secondary" onClick={() => void generatePractice('eng_Latn')} disabled={!!busy}>English</Button><Button variant="secondary" onClick={() => void generatePractice('sat_Olck')} disabled={!!busy}>Santhali</Button></div></Card><Card className="action-card"><Printer size={19} /><strong>Worksheet</strong><span>Open the bilingual print-first worksheet preview.</span><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}>Preview worksheet</Button></Card><Card className="action-card"><Layers size={19} /><strong>Flashcards</strong><span>Concept cards are generated from approved meaning.</span><Button variant="secondary" onClick={() => void generateFlashcards(target)} disabled={!!busy}>Refresh flashcards</Button></Card><Card className="action-card"><Volume2 size={19} /><strong>Audio</strong><span>TTS is generated locally and stored as a cached artifact.</span><div className="button-row"><Button variant="secondary" onClick={() => void makeTTS('hin_Deva')} disabled={!!busy}>Hindi</Button><Button variant="secondary" onClick={() => void makeTTS('eng_Latn')} disabled={!!busy}>English</Button><Button variant="secondary" onClick={() => void makeTTS('sat_Olck')} disabled={!!busy}>Santhali</Button></div></Card></div>{pack.artifacts.filter((a) => a.type === 'audio').length > 0 && <div className="artifact-list">{pack.artifacts.filter((a) => a.type === 'audio').map((artifact) => <div key={artifact.id} className="artifact-row"><div><strong>{languageLabel(artifact.language)}</strong><span>Cached audio · {Math.max(1, Math.round(artifact.size_bytes / 1024))} KB</span></div><audio controls src={artifactUrls[artifact.id]} onPlay={async () => { if (!artifactUrls[artifact.id]) { try { const blob = await api.fetchArtifact(artifact.id); setArtifactUrls((old) => ({ ...old, [artifact.id]: URL.createObjectURL(blob) })); } catch (err) { setError(errorMessage(err)); } } }} /></div>)}</div>}<div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div></Card>}
-
-        {step === 5 && <Card><SectionTitle title="6. Review & publish" subtitle="Preview what students will receive. Publishing is blocked until every prepared translation is approved." /><div className="preview-card"><div className="preview-top"><div><span className="eyebrow">STUDENT PREVIEW</span><h2>{title}</h2><p>{outcome || 'Learning outcome not added yet.'}</p></div><Status tone={canPublish ? 'success' : 'warning'}>{canPublish ? 'Ready to publish' : 'Review required'}</Status></div><div className="preview-concepts">{concepts.map((concept) => <span key={concept}>{concept}</span>)}</div><div className="preview-language-grid">{(['hin_Deva', 'eng_Latn', 'sat_Olck'] as Lang[]).map((lang) => { const t = lang === 'hin_Deva' ? null : pack.translations.find((translation) => translation.language === lang); return <div key={lang} className="preview-language"><div><strong>{languageLabel(lang)}</strong>{t ? <Status tone={t.verification_status === 'TEACHER_APPROVED' ? 'success' : 'warning'}>{t.verification_status.replaceAll('_', ' ')}</Status> : <Status>Source language</Status>}</div><p>{lang === 'hin_Deva' ? (transcript || source) : t?.text || 'Not prepared yet.'}</p></div>; })}</div></div><div className="publish-checklist"><div><Check size={15} /><span>Original source preserved</span></div><div><Check size={15} /><span>Learning outcome and concepts prepared</span></div><div><Check size={15} /><span>Teacher approval required for translations</span></div><div><Check size={15} /><span>Published package becomes eligible for offline sync</span></div></div><div className="button-row"><Button variant="secondary" onClick={createVersion} disabled={!!busy}><Layers size={15} /> Save as new version</Button><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}><Printer size={15} /> Worksheet preview</Button><Button onClick={() => void publish()} disabled={!canPublish || !!busy}><Send size={15} /> Publish lesson</Button></div><div className="version-history"><SectionTitle title="Version history" subtitle="Published versions can be restored without deleting their history." />{versions.map((version) => <div className="version-row" key={version.id}><div><strong>Version {version.version_number}</strong><span>{new Date(version.created_at).toLocaleString()}</span></div><div>{version.published_at ? <Status tone="success">Published</Status> : <Status>Draft</Status>}{version.published_at && version.id !== pack.version.id && <Button variant="ghost" onClick={() => void rollback(version.id)} disabled={!!busy}>Restore</Button>}</div></div>)}</div><div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button variant="secondary" onClick={() => navigate(`/groups/${pack.lesson.group_id}`)}>Done</Button></div></Card>}
+      <div className="builder-steps">
+        {STEPS.map((item, index) => {
+          const available = index <= step || (index === 3 && languageReady) || (index === 4 && languageReady) || (index === 5 && languageApproved && approvedSanthaliPractice.length > 0);
+          return <button key={item.key} className={index === step ? 'active' : available ? 'done' : ''} onClick={() => available ? setStep(index) : setError(`Finish the earlier step before opening ${item.label}.`)}>
+            <span className="step-number">{available && index !== step ? <Check size={15} /> : index + 1}</span><div><strong>{item.label}</strong><small>{item.short}</small></div>
+          </button>;
+        })}
       </div>
-      <aside className="builder-side">
-        <Card className="sticky-card"><SectionTitle title="Live readiness" subtitle="This updates as you work." /><div className="status-list"><div><span>Original lesson</span><Status tone={source.trim() ? 'success' : 'warning'}>{source.trim() ? 'Ready' : 'Missing'}</Status></div><div><span>Learning outcome</span><Status tone={outcome.trim() ? 'success' : 'warning'}>{outcome.trim() ? 'Ready' : 'Missing'}</Status></div><div><span>Concepts</span><Status tone={concepts.length ? 'success' : 'warning'}>{concepts.length} saved</Status></div><div><span>English</span><Status tone={pack.translations.some((t) => t.language === 'eng_Latn' && t.verification_status === 'TEACHER_APPROVED') ? 'success' : 'warning'}>{pack.translations.some((t) => t.language === 'eng_Latn' && t.verification_status === 'TEACHER_APPROVED') ? 'Approved' : 'Review'}</Status></div><div><span>Santhali</span><Status tone={pack.translations.some((t) => t.language === 'sat_Olck' && t.verification_status === 'TEACHER_APPROVED') ? 'success' : 'warning'}>{pack.translations.some((t) => t.language === 'sat_Olck' && t.verification_status === 'TEACHER_APPROVED') ? 'Approved' : 'Review'}</Status></div><div><span>Publish</span><Status tone={canPublish ? 'success' : 'warning'}>{canPublish ? 'Unlocked' : 'Blocked'}</Status></div></div><div className="side-hint"><strong>Why blocked?</strong><p>{canPublish ? 'All prepared translations have teacher approval.' : 'Prepare English + Santhali, review each output and approve them. Santhali native review can stay visible as a separate trust state.'}</p></div></Card>
-        <Card><SectionTitle title="Core loop" /><div className="mini-flow"><span>Speak / write</span><b>↓</b><span>Understand</span><b>↓</b><span>Concepts</span><b>↓</b><span>Translate + verify</span><b>↓</b><span>Publish + sync</span><b>↓</b><span>Learn + practice</span></div></Card>
-      </aside>
-    </div>
-  </Page>;
+
+      <div className="builder-layout">
+        <section className="builder-main">
+          {step === 0 && <Card><SectionTitle title="1. Teacher source" subtitle="Write the lesson or record the teacher's Hindi explanation. The source is always preserved." />
+            <div className="form-grid two"><Field label="Lesson title"><input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Why Plants Need Water" /></Field><Field label="Topic"><input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="Plants" /></Field></div>
+            <Field label="Teacher lesson" hint="Keep the original teaching meaning. AI will prepare suggestions around this source."><textarea rows={12} value={source} onChange={(e) => { setSource(e.target.value); setTranscript(e.target.value); }} placeholder="आज हम सीखेंगे कि पौधों को पानी की आवश्यकता क्यों होती है…" /></Field>
+            <div className="source-tools"><Button variant={recording ? 'danger' : 'secondary'} onClick={() => void record()}>{recording ? <Pause size={16} /> : <Mic size={16} />}{recording ? 'Stop & transcribe' : 'Record Hindi'}</Button><label className="upload-button"><Upload size={16} /> Upload audio<input type="file" accept="audio/*" hidden onChange={(e) => uploadAudio(e.target.files?.[0])} /></label><Button variant="ghost" onClick={() => void saveDraft(false)} disabled={!!busy}>Save draft</Button></div>
+            <div className="privacy-note"><ShieldCheck size={16} /><span>Original source and transcript remain separate from AI outputs. Nothing is silently overwritten.</span></div>
+            <div className="wizard-nav"><span /><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div>
+          </Card>}
+
+          {step === 1 && <Card><SectionTitle title="2. Understand the lesson" subtitle="AI prepares context, learning outcome and an explanation. You remain responsible for the final content." />
+            <div className="analysis-panel"><div><span className="eyebrow">CURRENT SOURCE</span><p>{transcript || source}</p></div>{outcome && <div className="analysis-output"><strong>Learning outcome</strong><p>{outcome}</p></div>}</div>
+            <div className="button-row"><Button onClick={analyze} disabled={!!busy || !(source.trim() || transcript.trim())}><RefreshCw size={16} /> Prepare learning context</Button>{outcome && <Status tone="success">Learning outcome ready</Status>}{concepts.length > 0 && <Status tone="success">{concepts.length} concepts ready</Status>}</div>
+            <div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div>
+          </Card>}
+
+          {step === 2 && <Card><SectionTitle title="3. Concepts & meaning" subtitle="Concepts become the common representation for translation, practice, visuals and assessment." />
+            <Field label="Learning outcome"><textarea rows={3} value={outcome} onChange={(e) => setOutcome(e.target.value)} /></Field>
+            <div className="concept-editor"><div className="concept-editor-head"><strong>Key concepts</strong><Button variant="ghost" onClick={() => setConcepts((items) => [...items, ''])}><FileText size={15} /> Add concept</Button></div>{concepts.map((concept, index) => <div className="concept-edit-row" key={`${index}-${concept}`}><span>{index + 1}</span><input value={concept} onChange={(e) => setConcepts((items) => items.map((item, itemIndex) => itemIndex === index ? e.target.value : item))} placeholder="Concept" /><button onClick={() => setConcepts((items) => items.filter((_, itemIndex) => itemIndex !== index))} aria-label="Remove concept">×</button></div>)}</div>
+            <div className="info-banner"><ShieldCheck size={16} /><div><strong>Trust rule</strong><p>AI suggestions may simplify or structure content, but they must not silently change the teacher's meaning.</p></div></div>
+            <div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={() => void saveDraft(false)} variant="secondary">Save concepts</Button><Button onClick={next}>Continue <ArrowRight size={16} /></Button></div>
+          </Card>}
+
+          {step === 3 && <Card><SectionTitle title="4. Languages & Translation Guard" subtitle="Generate both required showcase languages, then review each output before publication." />
+            <div className="language-toolbar"><Button onClick={() => void translateBoth()} disabled={!!busy || !(source.trim() || transcript.trim())}><RefreshCw size={16} /> Generate both</Button>{LANGUAGES.map((lang) => <button key={lang} className={target === lang ? 'language-tab active' : 'language-tab'} onClick={() => setTarget(lang)}>{nativeLabel(lang)}</button>)}</div>
+            <div className="translation-grid-large"><div className="translation-source"><div className="translation-head"><strong>Teacher source</strong><Status>Hindi · Source</Status></div><div className="translation-text original">{transcript || source}</div></div><div className="translation-target"><div className="translation-head"><strong>{nativeLabel(target)}</strong>{currentTranslation ? <Status tone={currentTranslation.verification_status === 'TEACHER_APPROVED' ? 'success' : 'warning'}>{currentTranslation.verification_status.replaceAll('_', ' ')}</Status> : <Status>Not prepared</Status>}</div><textarea rows={15} value={editedTranslation} onChange={(e) => setEditedTranslation(e.target.value)} placeholder={`Generate ${label(target)} to review it here…`} /></div></div>
+            <div className="translation-actions"><Button variant="secondary" onClick={() => void translateOne(target)} disabled={!!busy}><RefreshCw size={15} /> Generate {label(target)}</Button>{currentTranslation && <Button onClick={() => void saveTranslation()} disabled={!!busy || !editedTranslation.trim()}><Check size={15} /> Approve {label(target)}</Button>}{currentTranslation && currentTranslation.flags.length > 0 ? <Status tone="warning">{currentTranslation.flags.length} Translation Guard flag(s)</Status> : currentTranslation ? <Status tone="success">Automated checks passed; teacher review still required</Status> : <Status tone="warning">This language is not prepared yet</Status>}</div>
+            {currentTranslation && <div className="guard-panel-large"><div className="guard-summary"><div><span>Confidence</span><strong>{Math.round(currentTranslation.confidence * 100)}%</strong></div><div><span>Concepts missing</span><strong>{currentTranslation.validation?.concepts_missing?.length || 0}</strong></div><div><span>Numbers</span><strong>{currentTranslation.validation?.number_mismatch ? 'Mismatch' : 'OK'}</strong></div><div><span>Source leakage</span><strong>{currentTranslation.validation?.source_leakage ? 'Review' : 'OK'}</strong></div></div>{currentTranslation.flags.length > 0 && <div className="flag-list">{currentTranslation.flags.map((flag) => <span key={flag}>{flag.replaceAll('_', ' ')}</span>)}</div>}{target === 'sat_Olck' && <div className="native-review"><div><strong>Santhali native review</strong><span>{currentTranslation.native_review_status === 'PENDING' ? 'Pending qualified language review. Teacher approval does not claim native verification.' : currentTranslation.native_review_status}</span></div><Status tone="warning">Not automatically verified</Status></div>}</div>}
+            <div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue to activities <ArrowRight size={16} /></Button></div>
+          </Card>}
+
+          {step === 4 && <Card><SectionTitle title="5. Activities, worksheets & audio" subtitle="Draft useful classroom support, review practice, then prepare cached audio." />
+            <div className="action-card-grid"><Card className="action-card"><div className="action-icon"><FileText size={19} /></div><strong>Practice</strong><span>Generate draft MCQs from approved concepts.</span><div className="button-row wrap">{(['hin_Deva','eng_Latn','sat_Olck'] as Lang[]).map((lang) => <span key={lang} className="inline-action"><Button variant={activePracticeLanguage === lang ? 'primary' : 'secondary'} onClick={() => void generatePractice(lang)} disabled={!!busy}>{label(lang)}</Button></span>)}</div></Card><Card className="action-card"><div className="action-icon"><Printer size={19} /></div><strong>Worksheet</strong><span>Open the bilingual print-first worksheet inside this app.</span><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}>Preview worksheet</Button></Card><Card className="action-card"><div className="action-icon"><Layers size={19} /></div><strong>Flashcards</strong><span>Generate visual-ready concept cards.</span><Button variant="secondary" onClick={() => void generateFlashcards(target)} disabled={!!busy}>Refresh flashcards</Button></Card><Card className="action-card"><div className="action-icon"><Volume2 size={19} /></div><strong>Audio</strong><span>Generate target audio after translation approval.</span><div className="button-row wrap"><Button variant="secondary" onClick={() => void makeTTS('hin_Deva')} disabled={!!busy}>Hindi</Button><Button variant="secondary" onClick={() => void makeTTS('eng_Latn')} disabled={!!busy}>English</Button><Button variant="secondary" onClick={() => void makeTTS('sat_Olck')} disabled={!!busy}>Santhali</Button></div></Card></div>
+            <div className="review-block"><SectionTitle title="Practice review" subtitle="Generated questions are drafts until the educator approves them." />{(pack.practice_all || []).filter((q) => q.language === activePracticeLanguage).length === 0 ? <Status tone="warning">Generate {label(activePracticeLanguage)} practice first.</Status> : <div className="practice-review-list">{(pack.practice_all || []).filter((q) => q.language === activePracticeLanguage).map((question) => <div className="practice-review-row" key={question.id}><div><strong>{question.prompt}</strong><span>{question.options.join(' · ')}</span></div>{question.approved ? <Status tone="success">Approved</Status> : <Button variant="secondary" onClick={() => void approvePractice(question)} disabled={!!busy}>Approve</Button>}</div>)}</div>}</div>
+            {pack.artifacts.filter((item) => item.type === 'audio').length > 0 && <div className="artifact-list"><SectionTitle title="Prepared audio" subtitle="Protected audio is loaded with the signed user session." />{pack.artifacts.filter((item) => item.type === 'audio').map((artifact) => <div className="artifact-row" key={artifact.id}><div><strong>{label(artifact.language)}</strong><span>{Math.max(1, Math.round(artifact.size_bytes / 1024))} KB cached artifact</span></div>{artifactUrls[artifact.id] ? <audio controls src={artifactUrls[artifact.id]} /> : <Button variant="secondary" onClick={() => void (async () => { try { const blob = await api.fetchArtifact(artifact.id); setArtifactUrls((old) => ({ ...old, [artifact.id]: URL.createObjectURL(blob) })); } catch (err) { setError(errorMessage(err)); } })()}><Play size={15} /> Load audio</Button>}</div>)}</div>}
+            <div className="wizard-nav"><Button variant="ghost" onClick={back}><ArrowLeft size={16} /> Back</Button><Button onClick={next}>Continue to review <ArrowRight size={16} /></Button></div>
+          </Card>}
+
+          {step === 5 && <Card><SectionTitle title="6. Review & publish" subtitle="Students only receive the published version. Publication is blocked until the complete package is approved." />
+            <div className="preview-card"><div className="preview-top"><div><span className="eyebrow">STUDENT PREVIEW</span><h2>{title}</h2><p>{outcome}</p></div><Status tone={readiness.publish ? 'success' : 'warning'}>{readiness.publish ? 'Ready to publish' : 'Review required'}</Status></div><div className="preview-concepts">{concepts.filter(Boolean).map((concept) => <span key={concept}>{concept}</span>)}</div><div className="preview-language-grid">{(['hin_Deva','eng_Latn','sat_Olck'] as Lang[]).map((lang) => { const translation = lang === 'hin_Deva' ? null : translationByLanguage.get(lang); const approved = !translation || translation.verification_status === 'TEACHER_APPROVED'; return <div className="preview-language" key={lang}><div><strong>{nativeLabel(lang)}</strong>{translation ? <Status tone={approved ? 'success' : 'warning'}>{translation.verification_status.replaceAll('_',' ')}</Status> : <Status>Source</Status>}</div><p className={lang === 'sat_Olck' ? 'ol-chiki' : ''}>{lang === 'hin_Deva' ? transcript || source : translation?.text || 'Not prepared yet.'}</p></div>; })}</div></div>
+            <div className="publish-checklist"><div><Check size={15} /><span>Original source preserved</span></div><div><Check size={15} /><span>Learning outcome + concepts prepared</span></div><div><Check size={15} /><span>English + Santhali prepared and teacher-approved</span></div><div><Check size={15} /><span>{approvedPractice.length} approved practice question(s) · {approvedSanthaliPractice.length} Santhali</span></div><div><Check size={15} /><span>{santhaliAudioReady ? 'Santhali target-language audio prepared' : 'Santhali target-language audio required'}</span></div><div><Check size={15} /><span>Published package becomes eligible for offline sync</span></div></div>
+            {!readiness.publish && <div className="blocker-panel"><strong>Still blocked</strong><ul>{readiness.problems.map((problem) => <li key={problem}>{problem.replaceAll('_',' ')}</li>)}</ul></div>}
+            <div className="button-row wrap"><Button variant="secondary" onClick={createVersion} disabled={!!busy}><Layers size={15} /> Save as new version</Button><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}><Printer size={15} /> Worksheet preview</Button><Button onClick={() => void publish()} disabled={!readiness.publish || !!busy}><Send size={15} /> Publish lesson</Button></div>
+            <div className="version-history"><SectionTitle title="Version history" subtitle="Restore only previously published versions; history is never deleted." />{versions.map((version) => <div className="version-row" key={version.id}><div><strong>Version {version.version_number}</strong><span>{new Date(version.created_at).toLocaleString()}</span></div><div>{version.published_at ? <Status tone="success">Published</Status> : <Status>Draft</Status>}{version.published_at && version.id !== pack.version.id && <Button variant="ghost" onClick={() => void rollback(version.id)} disabled={!!busy}>Restore</Button>}</div></div>)}</div>
+          </Card>}
+        </section>
+
+        <aside className="builder-side"><Card className="sticky-card"><SectionTitle title="Live readiness" subtitle="This is based on actual backend state — not the current step number." /><div className="status-list"><Readiness label="Original lesson" ok={Boolean(source.trim() || transcript.trim())} text={source.trim() || transcript.trim() ? 'Ready' : 'Missing'} /><Readiness label="Learning outcome" ok={Boolean(outcome.trim())} text={outcome.trim() ? 'Ready' : 'Missing'} /><Readiness label="Concepts" ok={Boolean(concepts.filter(Boolean).length)} text={`${concepts.filter(Boolean).length} saved`} /><Readiness label="English" ok={translationByLanguage.get('eng_Latn')?.verification_status === 'TEACHER_APPROVED'} text={translationByLanguage.get('eng_Latn')?.verification_status === 'TEACHER_APPROVED' ? 'Approved' : translationByLanguage.get('eng_Latn') ? 'Review' : 'Not prepared'} /><Readiness label="Santhali" ok={translationByLanguage.get('sat_Olck')?.verification_status === 'TEACHER_APPROVED'} text={translationByLanguage.get('sat_Olck')?.verification_status === 'TEACHER_APPROVED' ? 'Approved · native review separate' : translationByLanguage.get('sat_Olck') ? 'Review' : 'Not prepared'} /><Readiness label="Practice" ok={approvedPractice.length > 0} text={`${approvedPractice.length} approved`} /><Readiness label="Santhali audio" ok={santhaliAudioReady} text={santhaliAudioReady ? 'Ready' : 'Required'} /><Readiness label="Publish" ok={readiness.publish} text={readiness.publish ? 'Unlocked' : 'Blocked'} /></div><div className="side-hint"><strong>Why is it blocked?</strong><p>{readiness.publish ? 'Everything required for publication has been prepared and approved.' : readiness.problems.join(' • ')}</p></div></Card><Card><SectionTitle title="Core loop" /><div className="mini-flow"><span>Speak / write</span><b>↓</b><span>Understand</span><b>↓</b><span>Concepts</span><b>↓</b><span>Translate + verify</span><b>↓</b><span>Publish + sync</span><b>↓</b><span>Learn + practice</span></div></Card></aside>
+      </div>
+    </Page>
+
+    {worksheetOpen && <Modal title="Worksheet preview" onClose={() => setWorksheetOpen(false)} wide><div className="worksheet-preview-actions"><Status tone="success">No pop-up required</Status><Button variant="secondary" onClick={() => worksheetFrame.current?.contentWindow?.print()}><Printer size={15} /> Print / Save PDF</Button><Button variant="ghost" onClick={() => setWorksheetOpen(false)}>Close</Button></div><iframe ref={worksheetFrame} className="worksheet-frame" title="BhashaSaathi worksheet" srcDoc={worksheetHtml} /></Modal>}
+  </>;
 }
 
-function BookIcon() { return <BookGlyph />; }
-function BookGlyph() { return <div className="action-icon"><FileText size={19} /></div>; }
+function Readiness({ label, ok, text }: { label: string; ok: boolean; text: string }) {
+  return <div><span>{label}</span><Status tone={ok ? 'success' : 'warning'}>{text}</Status></div>;
+}

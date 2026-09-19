@@ -39,6 +39,7 @@ BhashaSaathi_Local_NoDocker/
 ├─ apps/
 │  ├─ api/
 │  │  ├─ app/
+│  │  │  └─ layer2/        # runtime Layer 2 used by FastAPI
 │  │  ├─ alembic/
 │  │  ├─ data/
 │  │  ├─ models/              # YOUR MODEL WEIGHTS STAY HERE
@@ -48,7 +49,8 @@ BhashaSaathi_Local_NoDocker/
 │  │  └─ requirements.txt
 │  └─ web/
 ├─ core/
-│  └─ layer2/
+│  └─ layer2/              # reference copy
+
 ├─ scripts/
 └─ .env.example
 ```
@@ -73,6 +75,7 @@ pip install -r requirements.txt
 Your model folders should already pass:
 
 ```powershell
+python ..\..\scripts\check_environment.py
 python ..\..\scripts\verify_models.py
 ```
 
@@ -86,10 +89,18 @@ python ..\..\scripts\seed_demo.py
 
 ### 2. TTS support tokenizer
 
-Run once if `apps/api/models/tts/description-tokenizer` does not exist:
+The verified Parler checkpoint depends on a local FLAN-T5 *description tokenizer*. The main Parler weights are already in your TTS model folder.
+
+Run once if `apps/api/models/tts/flan-t5-large` is not present:
 
 ```powershell
 python ..\..\scripts\download_tts_support.py
+```
+
+Then verify it through:
+
+```powershell
+python ..\..\scripts\model_lab.py --skip-tts
 ```
 
 This downloads tokenizer/config support only. It does **not** download another large TTS model.

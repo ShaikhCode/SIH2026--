@@ -45,7 +45,7 @@ export default function LoginPage() {
         <Button type="submit" disabled={busy} className="full">{busy ? 'Signing in…' : 'Sign in'}</Button>
       </form>
       <div className="demo-box"><strong>Demo access</strong><span>Teacher: <b>teacher@bhashasaathi.local</b></span><span>Password: <b>Demo@1234</b></span></div>
-      <div className="auth-switch"><span>Learning with a class?</span><button onClick={() => navigate('/register')}>Create learner account →</button></div>
+      <div className="auth-switch"><span>New to BhashaSaathi?</span><button onClick={() => navigate('/register')}>Create a creator or student account →</button></div>
       <div className="trust-note"><ShieldCheck size={16} /><span>No paid AI runtime dependency. Your local models stay on your machine.</span></div>
     </Card></section>
   </div>;

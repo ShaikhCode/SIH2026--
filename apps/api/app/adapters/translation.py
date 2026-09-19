@@ -1,133 +1,155 @@
 from __future__ import annotations
 
-from pathlib import Path
+import re
 import threading
+from pathlib import Path
 from typing import Any
 
 import torch
 
 
 class IndicTrans2Adapter:
-    """Local-only IndicTrans2 adapter.
+    """Local IndicTrans2 adapter using the known-working HF + IndicProcessor flow.
 
-    Models are loaded lazily and kept in memory until explicitly unloaded.
-    The adapter supports Indic↔Indic, English→Indic, and Indic→English.
+    The adapter deliberately stays independent of FastAPI/SQL/UI. It accepts local
+    model directories and never needs runtime internet access.
     """
 
-    def __init__(self, model_root: Path, cpu_only: bool = False) -> None:
-        self.model_root = model_root
+    def __init__(self, model_root: Path, cpu_only: bool = False, max_chars: int = 12000) -> None:
+        self.model_root = Path(model_root)
         self.cpu_only = cpu_only
-        self._models: dict[str, tuple[Any, Any]] = {}
-        self._processors: dict[str, Any] = {}
+        self.max_chars = max_chars
+        self._bundles: dict[str, tuple[Any, Any, Any, torch.device]] = {}
         self._lock = threading.RLock()
 
     @staticmethod
     def _key(src: str, tgt: str) -> str:
-        if src.startswith("eng") and not tgt.startswith("eng"):
-            return "en-indic"
-        if not src.startswith("eng") and tgt.startswith("eng"):
-            return "indic-en"
-        return "indic-indic"
+        if src.startswith('eng') and not tgt.startswith('eng'):
+            return 'en-indic'
+        if not src.startswith('eng') and tgt.startswith('eng'):
+            return 'indic-en'
+        return 'indic-indic'
 
     def _path(self, key: str) -> Path:
-        return self.model_root / "translation" / key
+        return self.model_root / 'translation' / key
+
+    @staticmethod
+    def _resolve_model_dir(path: Path) -> Path:
+        if (path / 'config.json').is_file():
+            return path
+        if not path.is_dir():
+            return path
+        configs = [p for p in path.iterdir() if p.is_dir() and (p / 'config.json').is_file()]
+        return configs[0] if len(configs) == 1 else path
 
     def health(self) -> dict[str, bool]:
         result: dict[str, bool] = {}
-        for key in ("indic-indic", "en-indic", "indic-en"):
-            path = self._path(key)
-            # verify_models.py only needs a populated folder, while runtime
-            # needs an actual HF model config as well.
-            result[key] = (
-                path.is_dir()
-                and (path / "config.json").is_file()
-                and any(path.iterdir())
+        for key in ('indic-indic', 'en-indic', 'indic-en'):
+            path = self._resolve_model_dir(self._path(key))
+            has_config = (path / 'config.json').is_file()
+            has_weights = any(
+                (path / name).is_file()
+                for name in ('model.safetensors', 'pytorch_model.bin', 'model.bin')
             )
+            has_tokenizer = any(
+                (path / name).is_file()
+                for name in ('tokenizer.json', 'tokenizer.model', 'sentencepiece.bpe.model')
+            )
+            result[key] = path.is_dir() and has_config and has_weights and has_tokenizer
         return result
 
-    def _load(self, key: str) -> tuple[tuple[Any, Any], Any]:
+    def _load(self, key: str):
         with self._lock:
-            if key in self._models:
-                return self._models[key], self._processors[key]
+            if key in self._bundles:
+                return self._bundles[key]
 
-            path = self._path(key)
-            if not path.is_dir():
-                raise FileNotFoundError(f"Missing translation model folder: {path}")
-            if not (path / "config.json").is_file():
-                raise RuntimeError(
-                    f"IndicTrans2 model is incomplete: {path} is missing config.json. "
-                    "Re-copy the complete Hugging Face model folder."
-                )
+            path = self._resolve_model_dir(self._path(key))
+            if not path.is_dir() or not (path / 'config.json').is_file():
+                raise FileNotFoundError(f'IndicTrans2 model folder is incomplete: {path}')
 
-            try:
-                from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-            except Exception as exc:
-                raise RuntimeError(
-                    "Transformers could not be imported. Run: pip install -r requirements.txt"
-                ) from exc
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-            # Current IndicTransToolkit releases expose IndicProcessor from
-            # the processor submodule. Keep a fallback for older installations.
             try:
                 from IndicTransToolkit.processor import IndicProcessor
             except Exception:
                 try:
-                    from IndicTransToolkit import IndicProcessor  # type: ignore
-                except Exception as exc:
+                    from IndicTransToolkit import IndicProcessor
+                except Exception as exc:  # pragma: no cover - environment specific
                     raise RuntimeError(
-                        "IndicProcessor could not be imported. "
-                        "Run: pip install --upgrade IndicTransToolkit==1.1.1"
+                        'IndicProcessor could not be imported. Install IndicTransToolkit==1.1.1 '
+                        'inside the BhashaSaathi virtual environment.'
                     ) from exc
 
             device = torch.device(
-                "cpu" if self.cpu_only or not torch.cuda.is_available() else "cuda"
+                'cpu' if self.cpu_only or not torch.cuda.is_available() else 'cuda'
             )
-
             tokenizer = AutoTokenizer.from_pretrained(
                 str(path),
                 trust_remote_code=True,
                 local_files_only=True,
             )
-
-            model_kwargs: dict[str, Any] = {
-                "trust_remote_code": True,
-                "local_files_only": True,
+            kwargs: dict[str, Any] = {
+                'trust_remote_code': True,
+                'local_files_only': True,
             }
-            if device.type == "cuda":
-                model_kwargs["torch_dtype"] = torch.float16
+            if device.type == 'cuda':
+                kwargs['torch_dtype'] = torch.float16
 
-            model = AutoModelForSeq2SeqLM.from_pretrained(str(path), **model_kwargs)
+            model = AutoModelForSeq2SeqLM.from_pretrained(str(path), **kwargs)
             model.to(device).eval()
             processor = IndicProcessor(inference=True)
+            self._bundles[key] = (tokenizer, model, processor, device)
+            return self._bundles[key]
 
-            self._models[key] = (tokenizer, model)
-            self._processors[key] = processor
-            return (tokenizer, model), processor
+    @staticmethod
+    def _split_text(text: str, max_chars: int) -> list[str]:
+        normalized = re.sub(r'\s+', ' ', text.strip())
+        if not normalized:
+            return []
+        if len(normalized) <= max_chars:
+            return [normalized]
 
-    def translate(self, text: str, src: str, tgt: str) -> str:
-        text = (text or "").strip()
-        if not text:
-            raise ValueError("Cannot translate empty text.")
-        if src == tgt:
-            return text
+        sentences = re.split(r'(?<=[.!?।॥])\s+', normalized)
+        chunks: list[str] = []
+        current = ''
+        for sentence in sentences:
+            if not sentence:
+                continue
+            candidate = sentence if not current else f'{current} {sentence}'
+            if len(candidate) <= max_chars:
+                current = candidate
+            else:
+                if current:
+                    chunks.append(current)
+                # Hard split an unusually long sentence so we never silently truncate.
+                while len(sentence) > max_chars:
+                    cut = sentence.rfind(' ', 0, max_chars)
+                    if cut < max_chars // 2:
+                        cut = max_chars
+                    chunks.append(sentence[:cut].strip())
+                    sentence = sentence[cut:].strip()
+                current = sentence
+        if current:
+            chunks.append(current)
+        return chunks
 
-        (tokenizer, model), processor = self._load(self._key(src, tgt))
-
+    def _translate_batch(self, texts: list[str], src: str, tgt: str) -> list[str]:
+        tokenizer, model, processor, device = self._load(self._key(src, tgt))
         batch = processor.preprocess_batch(
-            [text],
+            texts,
             src_lang=src,
             tgt_lang=tgt,
             visualize=False,
         )
         encoded = tokenizer(
             batch,
-            padding="longest",
+            padding='longest',
             truncation=True,
             max_length=256,
-            return_tensors="pt",
+            return_tensors='pt',
+            return_attention_mask=True,
         )
-        encoded = {k: v.to(model.device) for k, v in encoded.items()}
-
+        encoded = {key: value.to(device) for key, value in encoded.items()}
         with torch.inference_mode():
             outputs = model.generate(
                 **encoded,
@@ -136,23 +158,37 @@ class IndicTrans2Adapter:
                 num_return_sequences=1,
                 max_length=256,
             )
-
         decoded = tokenizer.batch_decode(
             outputs.detach().cpu().tolist(),
             skip_special_tokens=True,
             clean_up_tokenization_spaces=True,
         )
-        translations = processor.postprocess_batch(
-            decoded,
-            lang=tgt,
-        )
-        if not translations or not translations[0].strip():
-            raise RuntimeError("IndicTrans2 returned an empty translation.")
-        return translations[0].strip()
+        translations = processor.postprocess_batch(decoded, lang=tgt)
+        if len(translations) != len(texts):
+            raise RuntimeError(
+                f'IndicTrans2 returned {len(translations)} outputs for {len(texts)} inputs.'
+            )
+        return [item.strip() for item in translations]
+
+    def translate(self, text: str, src: str, tgt: str) -> str:
+        text = re.sub(r'\s+', ' ', (text or '').strip())
+        if not text:
+            raise ValueError('Cannot translate empty text.')
+        if src == tgt:
+            return text
+
+        chunks = self._split_text(text, self.max_chars)
+        outputs: list[str] = []
+        # Small batches reduce peak memory and make long classroom lessons safe.
+        for index in range(0, len(chunks), 8):
+            outputs.extend(self._translate_batch(chunks[index:index + 8], src, tgt))
+        result = ' '.join(item for item in outputs if item).strip()
+        if not result:
+            raise RuntimeError('IndicTrans2 returned an empty translation.')
+        return result
 
     def unload(self) -> None:
         with self._lock:
-            self._models.clear()
-            self._processors.clear()
+            self._bundles.clear()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

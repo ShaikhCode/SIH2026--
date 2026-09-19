@@ -81,6 +81,7 @@ export interface Practice {
   explanation: string;
   language: Lang;
   question_type?: string;
+  approved?: boolean;
 }
 
 export interface Artifact {
@@ -115,6 +116,7 @@ export interface LessonPack {
   translations: Translation[];
   artifacts: Artifact[];
   practice: Practice[];
+  practice_all?: Practice[];
 }
 
 export interface VersionSummary {

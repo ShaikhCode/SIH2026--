@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parents[2]
+# apps/api (not apps/api/app) is the runtime root.
+API_ROOT = Path(__file__).resolve().parents[2]
+
 
 class Settings(BaseSettings):
     app_env: str = 'development'
@@ -20,17 +25,42 @@ class Settings(BaseSettings):
     cpu_only: bool = False
     log_level: str = 'INFO'
     max_audio_mb: int = 30
+    max_translation_chars: int = 12000
+    parler_description_tokenizer: str = ''
 
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore')
+    model_config = SettingsConfigDict(
+        env_file='.env',
+        env_file_encoding='utf-8',
+        extra='ignore',
+    )
+
 
 settings = Settings()
 
-API_ROOT = Path(__file__).resolve().parents[1]
+
+def _resolve_local_path(value: str) -> Path:
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (API_ROOT / path).resolve()
+
+
+# Keep local paths stable regardless of whether uvicorn is started from apps/api,
+# the repository root, or another working directory.
+STORAGE_ROOT = _resolve_local_path(settings.storage_dir)
+MODELS_ROOT = _resolve_local_path(settings.model_dir)
 DATA_ROOT = API_ROOT / 'data'
-STORAGE_ROOT = (API_ROOT / settings.storage_dir).resolve() if not Path(settings.storage_dir).is_absolute() else Path(settings.storage_dir)
-MODELS_ROOT = (API_ROOT / settings.model_dir).resolve() if not Path(settings.model_dir).is_absolute() else Path(settings.model_dir)
+
+if settings.database_url.startswith('sqlite:///'):
+    sqlite_path = Path(settings.database_url.removeprefix('sqlite:///'))
+    if not sqlite_path.is_absolute():
+        settings.database_url = f'sqlite:///{(API_ROOT / sqlite_path).resolve().as_posix()}'
+
+# Relative PARLER_DESCRIPTION_TOKENIZER values are resolved by the TTS adapter
+# against MODELS_ROOT. Absolute values are preserved.
+
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 MODELS_ROOT.mkdir(parents=True, exist_ok=True)
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+
 
 def origins() -> list[str]:
-    return [x.strip() for x in settings.cors_origins.split(',') if x.strip()]
+    return [item.strip() for item in settings.cors_origins.split(',') if item.strip()]

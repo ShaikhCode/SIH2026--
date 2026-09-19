@@ -14,7 +14,7 @@ export function deviceId() {
 
 export async function queueAttempt(payload: Record<string, unknown>) {
   const queueId = crypto.randomUUID();
-  await put('sync_queue', queueId, { queueId, type: 'attempt', payload, createdAt: Date.now(), state: 'pending' });
+  await put('sync_queue', queueId, { queueId, type: 'attempt', payload, createdAt: Date.now(), state: 'pending', attempts: 0 });
 }
 
 export async function pendingCount() {
@@ -36,10 +36,16 @@ export async function syncNow() {
         payload: row.payload,
       })),
     );
+    const failures = new Set((result.failures || []).map((item: any) => String(item.entity_id)));
     for (const row of rows) {
-      await put('sync_queue', row.queueId, { ...row, state: 'synced', syncedAt: Date.now() });
+      const entityId = String(row.payload?.localId || row.queueId);
+      if (failures.has(entityId)) {
+        await put('sync_queue', row.queueId, { ...row, attempts: (row.attempts || 0) + 1, state: 'pending', lastError: failures.has(entityId) ? 'Server rejected this offline attempt.' : undefined });
+      } else {
+        await put('sync_queue', row.queueId, { ...row, state: 'synced', syncedAt: Date.now() });
+      }
     }
-    return { ok: true, count: result.processed || result.accepted || rows.length };
+    return { ok: true, count: result.processed || 0 };
   } catch {
     return { ok: false, count: await pendingCount() };
   }
