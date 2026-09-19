@@ -175,7 +175,8 @@ MIN_UTTERANCE_MS = 250
 MAX_UTTERANCE_MS = 2_200
 BOUNDARY_SEARCH_MS = 550
 LIVE_MIN_CHUNK_MS = 1_200
-TTS_STREAM_CHUNK_S = 0.50
+TTS_STREAM_SECONDS = float(os.getenv("BHASHA_TTS_STREAM_SECONDS", "1.0"))
+TTS_STREAM_TIMEOUT_S = float(os.getenv("BHASHA_TTS_STREAM_TIMEOUT", "15.0"))
 START_DB = -39.0
 SPEECH_OFFSET_DB = 7.0
 SILENCE_OFFSET_DB = 3.0
@@ -189,17 +190,20 @@ MAX_TRANSLATION_LENGTH = 256
 # Parler description. The model's prompt text is the translated sentence;
 # this description controls the speaking style.
 TTS_SPEAKERS = {
-    "English": "Thoma",
-    "Hindi": "Rohit",
-    "Marathi": "Sanjay",
+    "Assamese": "Amit",
     "Bengali": "Arjun",
     "Gujarati": "Yash",
+    "Hindi": "Rohit",
     "Kannada": "Suresh",
-    "Malayalam": "Anjali",
-    "Nepali": "Amrita",
+    "Malayalam": "Harish",
+    "Marathi": "Sanjay",
+    "Nepali": "Ram",
     "Odia": "Manas",
+    "Punjabi": "Gurpreet",
     "Tamil": "Jaya",
     "Telugu": "Prakash",
+    "Urdu": "Rohit",
+    "English": "Thoma",
 }
 
 
@@ -397,38 +401,49 @@ def _normalize_device_name(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
 
 
-def resolve_soundcard_speaker(output_device: int):
-    """Map PortAudio's selected output index to a Windows/WASAPI SoundCard speaker."""
+def _soundcard_speaker_choices() -> list[tuple[str, Any]]:
+    """Return stable UI labels for actual SoundCard/WASAPI speakers."""
     if sc is None:
-        return None
-    try:
-        portaudio_name = str(sd.query_devices(output_device, "output")["name"])
-    except Exception:
-        return None
-    try:
-        return sc.get_speaker(portaudio_name)
-    except Exception:
-        pass
-    target = _normalize_device_name(portaudio_name)
+        return []
     try:
         speakers = sc.all_speakers()
+        default_speaker = sc.default_speaker()
+        default_name = _normalize_device_name(getattr(default_speaker, "name", ""))
+    except Exception:
+        return []
+    choices: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    for i, speaker in enumerate(speakers):
+        name = str(getattr(speaker, "name", f"Speaker {i}"))
+        if not name:
+            continue
+        marker = " | DEFAULT OUT" if _normalize_device_name(name) == default_name else ""
+        label = f"SC:{i}: {name} [WASAPI{marker}]"
+        if label not in seen:
+            choices.append((label, speaker))
+            seen.add(label)
+    return choices
+
+
+def soundcard_speaker_from_label(label: str):
+    if sc is None or not label.startswith("SC:"):
+        return None
+    try:
+        idx = int(label.split(":", 2)[1].strip())
     except Exception:
         return None
-    # Prefer exact/containment matches, then a token-overlap match.
-    for speaker in speakers:
-        sn = _normalize_device_name(getattr(speaker, "name", ""))
-        if sn == target or target in sn or sn in target:
-            return speaker
-    target_tokens = set(target.split())
-    best = None
-    best_score = 0
-    for speaker in speakers:
-        sn = _normalize_device_name(getattr(speaker, "name", ""))
-        score = len(target_tokens.intersection(sn.split()))
-        if score > best_score:
-            best_score = score
-            best = speaker
-    return best if best_score >= 1 else None
+    try:
+        speakers = sc.all_speakers()
+        if 0 <= idx < len(speakers):
+            return speakers[idx]
+    except Exception:
+        return None
+    return None
+
+
+def resolve_legacy_sounddevice_output(label: str) -> Optional[int]:
+    """Fallback for systems where SoundCard is unavailable."""
+    return find_device_index(label)
 
 
 def cleanup_torch() -> None:
@@ -785,19 +800,23 @@ class ParlerTTSEngine:
         kwargs: dict[str, Any] = {"local_files_only": True}
         if device == "cuda":
             kwargs["torch_dtype"] = torch.float16
-            # SDPA is supported by Parler-TTS and is faster than eager attention.
-            # If the pinned local stack rejects the kwarg, retry without it.
-            try:
-                return ParlerTTSForConditionalGeneration.from_pretrained(
-                    str(self.model_dir), attn_implementation="sdpa", **kwargs
-                ).to(device)
-            except (TypeError, ValueError):
-                return ParlerTTSForConditionalGeneration.from_pretrained(
-                    str(self.model_dir), **kwargs
-                ).to(device)
-        return ParlerTTSForConditionalGeneration.from_pretrained(
-            str(self.model_dir), **kwargs
-        ).to(device)
+
+        # Parler-TTS officially supports SDPA. The project documents SDPA as
+        # faster than eager attention and recommends it before considering
+        # Flash Attention 2. We therefore request SDPA explicitly and fall back
+        # only when the installed Transformers/Parler stack rejects the argument.
+        try:
+            model = ParlerTTSForConditionalGeneration.from_pretrained(
+                str(self.model_dir),
+                attn_implementation="sdpa",
+                **kwargs,
+            )
+        except (TypeError, ValueError):
+            model = ParlerTTSForConditionalGeneration.from_pretrained(
+                str(self.model_dir),
+                **kwargs,
+            )
+        return model.to(device)
 
     def load(self) -> None:
         with self._lock:
@@ -848,8 +867,9 @@ class ParlerTTSEngine:
             )
             self.streaming_supported = ParlerTTSStreamer is not None
             self.ui.status(
-                f"Parler-TTS ready ({self.sampling_rate} Hz, {self.device.upper()}" +
-                (", streaming)" if self.streaming_supported else ", full-generation fallback)"))
+                f"Parler-TTS ready ({self.sampling_rate} Hz, {self.device.upper()}, "
+                f"stream={TTS_STREAM_SECONDS:.2f}s, "
+                + ("streaming)" if self.streaming_supported else "full-generation fallback)"))
             
     def _tokenize(self, text: str) -> tuple[Any, Any]:
         if self.description_tokenizer is None or self.prompt_tokenizer is None:
@@ -873,8 +893,12 @@ class ParlerTTSEngine:
                 attention_mask=description_inputs.attention_mask,
                 prompt_input_ids=prompt_inputs.input_ids,
                 prompt_attention_mask=prompt_inputs.attention_mask,
-                do_sample=False,
+                do_sample=True,
+                temperature=1.0,
+                top_k=50,
+                top_p=1.0,
                 use_cache=True,
+                min_new_tokens=10,
             )
         if hasattr(generation, "sequences"):
             if hasattr(generation, "audios_length") and generation.audios_length is not None:
@@ -987,7 +1011,9 @@ class ParlerTTSEngine:
         sf.write(pcm, np.asarray(audio, dtype=np.float32), int(sample_rate), format="WAV", subtype="PCM_16")
         wav_bytes = pcm.getvalue()
         # SND_MEMORY accepts the complete in-memory RIFF/WAV payload.
-        winsound.PlaySound(wav_bytes, winsound.SND_MEMORY | winsound.SND_SYNC)
+        # PlaySound is synchronous by default; do not rely on SND_SYNC because
+        # some Windows Python builds expose the function without that constant.
+        winsound.PlaySound(wav_bytes, winsound.SND_MEMORY)
 
     def _play_chunk(self, audio: np.ndarray, sample_rate: int, output_device: int, stop_event: threading.Event, player=None) -> None:
         """Play one generated TTS chunk.
@@ -1017,174 +1043,179 @@ class ParlerTTSEngine:
             arr = np.repeat(arr[:, None], 2, axis=1)
         sd.play(arr, samplerate=output_rate, device=output_device, blocking=True)
 
+    def _play_with_soundcard_stream(self, speaker, pieces_iter, stop_event: threading.Event, on_first_audio, started: float) -> float:
+        """Play an iterable of generated mono chunks through one persistent SoundCard player."""
+        if sc is None or speaker is None:
+            raise RuntimeError("SoundCard speaker is unavailable")
+
+        # SoundCard expects frames x channels numpy arrays. Two-channel playback is
+        # used when available; Windows shared-mode WASAPI performs the device-side
+        # conversion. 48 kHz is the safest common rate for Bluetooth Windows audio.
+        channels_available = getattr(speaker, "channels", 2)
+        if isinstance(channels_available, int):
+            channels = max(1, min(int(channels_available), 2))
+        elif isinstance(channels_available, (list, tuple)):
+            channels = max(1, min(len(channels_available), 2))
+        else:
+            channels = 2
+
+        # Try the common Windows rate first, then the model's native 44.1 kHz.
+        last_error: Optional[BaseException] = None
+        for rate in (48000, self.sampling_rate, 44100):
+            if stop_event.is_set():
+                return max(time.perf_counter() - started, 0.0)
+            try:
+                with speaker.player(
+                    samplerate=int(rate),
+                    channels=channels,
+                    blocksize=512,
+                    exclusive_mode=False,
+                ) as player:
+                    self.ui.status(
+                        f"TTS audio: {getattr(speaker, 'name', 'speaker')} | "
+                        f"{rate} Hz / {channels}ch"
+                    )
+                    first_sent = False
+                    first_submit_at: Optional[float] = None
+                    submitted_audio_seconds = 0.0
+                    chunk_count = 0
+
+                    for raw_piece in pieces_iter:
+                        if stop_event.is_set():
+                            break
+                        piece = tensor_to_numpy_audio(raw_piece)
+                        if piece.size == 0:
+                            continue
+                        if self.sampling_rate != rate:
+                            piece = resample_audio(piece, self.sampling_rate, rate)
+                        if channels == 2:
+                            piece = np.repeat(piece[:, None], 2, axis=1)
+                        else:
+                            piece = piece.reshape(-1, 1)
+
+                        if not first_sent:
+                            first_sent = True
+                            first_submit_at = time.perf_counter()
+                            if on_first_audio is not None:
+                                on_first_audio(first_submit_at - started)
+
+                        player.play(piece.astype(np.float32, copy=False))
+                        submitted_audio_seconds += len(piece) / float(rate)
+                        chunk_count += 1
+                        if chunk_count == 1:
+                            self.ui.status(
+                                f"TTS audio streaming: first chunk {submitted_audio_seconds:.2f}s"
+                            )
+
+                    # CRITICAL: SoundCard's player.play() returns before all audio
+                    # has physically finished playing. Exiting the player context
+                    # immediately would stop the stream and can produce exactly the
+                    # 'TTS generated but I hear nothing' symptom. Keep the player
+                    # alive until the queued audio should have drained.
+                    if first_submit_at is not None and submitted_audio_seconds > 0:
+                        target_end = first_submit_at + submitted_audio_seconds + 0.20
+                        remaining = target_end - time.perf_counter()
+                        if remaining > 0 and not stop_event.is_set():
+                            time.sleep(remaining)
+
+                    self.ui.status(
+                        f"TTS playback drained: {submitted_audio_seconds:.2f}s audio / {chunk_count} chunks"
+                    )
+                    return max(time.perf_counter() - started, 0.0)
+            except Exception as exc:
+                last_error = exc
+                continue
+
+        raise RuntimeError(
+            f"SoundCard could not open the selected Windows speaker. "
+            f"Last error: {last_error}"
+        )
+
     def stream_to_output(
         self,
         text: str,
-        output_device: int,
+        output_device: Any,
         stop_event: threading.Event,
         on_first_audio: Optional[Callable[[float], None]] = None,
     ) -> float:
-        """Generate and play TTS incrementally, using a Windows-native audio path.
+        """Reliable TTS path for the live pipeline.
 
-        The previous implementation tried to feed Parler chunks into PortAudio's
-        WASAPI output stream. The user's machine rejected that route with -9999.
-        Here we prefer SoundCard's native WASAPI player for the selected endpoint;
-        winsound and sounddevice remain fallbacks.
+        The live system still runs STT, translation and this TTS worker in parallel,
+        but TTS generation is deliberately completed before playback. This avoids
+        the flaky Parler streamer path on the user's Windows laptop while preserving
+        FIFO ordering and overlap between pipeline stages.
         """
         self.load()
         started = time.perf_counter()
 
-        # Build a persistent output player when SoundCard is available. SoundCard's
-        # player queues successive pieces one after another, which is exactly what
-        # the Parler streamer needs for ordered incremental audio.
-        sc_speaker = resolve_soundcard_speaker(output_device) if sc is not None else None
-        sc_player = None
-        sc_rate = self.sampling_rate
-        sc_channels = 2
-        if sc_speaker is not None:
-            available_channels = getattr(sc_speaker, "channels", 2)
-            if isinstance(available_channels, int):
-                sc_channels = max(1, min(int(available_channels), 2))
-            elif isinstance(available_channels, (list, tuple)):
-                sc_channels = max(1, min(len(available_channels), 2))
-
-            # Shared WASAPI normally performs the system-side conversion. Try the
-            # model's native rate first, then the common Windows 48 kHz rate.
-            for rate in (self.sampling_rate, 48000, 44100):
-                try:
-                    sc_player = sc_speaker.player(
-                        samplerate=int(rate),
-                        channels=sc_channels,
-                        blocksize=1024,
-                        exclusive_mode=False,
-                    )
-                    sc_rate = int(rate)
-                    break
-                except Exception:
-                    sc_player = None
-
-        self.ui.status(
-            f"TTS output: {self.sampling_rate} Hz | "
-            + (f"SoundCard/WASAPI {sc_rate} Hz / {sc_channels}ch" if sc_player is not None else "fallback playback")
+        selected_speaker = (
+            output_device
+            if (sc is not None and hasattr(output_device, "player"))
+            else None
         )
-
-        def play_piece(piece: np.ndarray) -> None:
-            nonlocal sc_player
-            if stop_event.is_set() or piece.size == 0:
-                return
-            if sc_player is not None:
-                arr = resample_audio(piece, self.sampling_rate, sc_rate)
-                if sc_channels == 2:
-                    arr = np.repeat(arr[:, None], 2, axis=1)
-                else:
-                    arr = arr.reshape(-1, 1)
-                sc_player.play(arr)
-            else:
-                self._play_chunk(piece, self.sampling_rate, output_device, stop_event)
-
-        if self.streaming_supported and self.model is not None:
-            streamer = ParlerTTSStreamer(
-                self.model,
-                device=self.device,
-                play_steps=max(1, int(self.frame_rate * TTS_STREAM_CHUNK_S)),
-                timeout=0.5,
-            )
-            description_inputs, prompt_inputs = self._tokenize(text)
-            generation_error: list[BaseException] = []
-            generation_finished = threading.Event()
-            first_audio = False
-
-            generation_kwargs = dict(
-                input_ids=description_inputs.input_ids,
-                attention_mask=description_inputs.attention_mask,
-                prompt_input_ids=prompt_inputs.input_ids,
-                prompt_attention_mask=prompt_inputs.attention_mask,
-                streamer=streamer,
-                do_sample=False,
-                use_cache=True,
-                min_new_tokens=10,
-            )
-
-            def generate_target() -> None:
-                try:
-                    with torch.inference_mode():
-                        self.model.generate(**generation_kwargs)
-                except BaseException as exc:
-                    generation_error.append(exc)
-                finally:
-                    generation_finished.set()
-
-            worker = threading.Thread(target=generate_target, name="parler-generate", daemon=True)
-            worker.start()
-            player_cm = None
+        if selected_speaker is None and sc is not None:
             try:
-                # Enter the SoundCard player only after all validation is done.
-                if sc_speaker is not None and sc_player is not None:
-                    player_cm = sc_player
-                    player_cm.__enter__()
+                selected_speaker = soundcard_speaker_from_label(str(output_device))
+            except Exception:
+                selected_speaker = None
 
-                while not stop_event.is_set():
-                    try:
-                        new_audio = next(streamer)
-                    except queue.Empty:
-                        if generation_error:
-                            raise generation_error[0]
-                        if generation_finished.is_set():
-                            break
-                        continue
-                    except StopIteration:
-                        break
-
-                    piece = tensor_to_numpy_audio(new_audio)
-                    if piece.size == 0:
-                        if generation_finished.is_set():
-                            break
-                        continue
-                    if not first_audio:
-                        first_audio = True
-                        if on_first_audio is not None:
-                            on_first_audio(time.perf_counter() - started)
-                    play_piece(piece)
-
-                worker.join(timeout=5.0)
-                if generation_error:
-                    raise generation_error[0]
-                return max(time.perf_counter() - started, 0.0)
-            except Exception as stream_exc:
-                self.ui.warning(
-                    f"Streaming TTS path failed ({stream_exc}); falling back to full-generation TTS."
-                )
-                cleanup_torch()
-                if stop_event.is_set():
-                    return max(time.perf_counter() - started, 0.0)
-            finally:
-                if player_cm is not None:
-                    try:
-                        player_cm.__exit__(None, None, None)
-                    except Exception:
-                        pass
-
-        # Compatibility fallback: use the documented direct model.generate path.
+        # Generate one complete waveform first. This is the documented, deterministic
+        # Parler route and is substantially easier to debug than streaming codes.
+        self.ui.status("TTS: generating audio...")
         audio = self._full_generate(text)
-        if audio.size and not stop_event.is_set():
-            if on_first_audio is not None:
-                on_first_audio(time.perf_counter() - started)
-            if sc_speaker is not None:
-                # Open a short-lived player using the model rate if possible.
-                try:
-                    rate = self.sampling_rate
-                    ch = sc_channels
-                    with sc_speaker.player(samplerate=rate, channels=ch, blocksize=1024, exclusive_mode=False) as player:
-                        arr = audio
-                        if ch == 2:
-                            arr = np.repeat(arr[:, None], 2, axis=1)
-                        else:
-                            arr = arr.reshape(-1, 1)
-                        player.play(arr)
-                except Exception:
-                    self._play_chunk(audio, self.sampling_rate, output_device, stop_event)
-            else:
-                self._play_chunk(audio, self.sampling_rate, output_device, stop_event)
+
+        if audio.size == 0:
+            raise RuntimeError("Parler-TTS returned zero audio samples")
+        peak = float(np.max(np.abs(audio)))
+        rms = float(np.sqrt(np.mean(audio * audio)))
+        duration = len(audio) / float(self.sampling_rate)
+        self.ui.status(
+            f"TTS generated: {duration:.2f}s | peak={peak:.4f} rms={rms:.4f}"
+        )
+        if peak < 1e-5:
+            raise RuntimeError(
+                f"Parler-TTS generated effectively silent audio (peak={peak:.8f})"
+            )
+
+        # Optional diagnostic WAV. Enable with BHASHA_SAVE_TTS_DEBUG=1.
+        if os.getenv("BHASHA_SAVE_TTS_DEBUG", "1").strip().lower() in {"1", "true", "yes"}:
+            debug_path = ROOT_DIR / "bhashasaathi_tts_debug.wav"
+            try:
+                sf.write(
+                    str(debug_path),
+                    audio,
+                    self.sampling_rate,
+                    subtype="PCM_16",
+                )
+                self.ui.status(f"TTS debug WAV: {debug_path.name}")
+            except Exception as exc:
+                self.ui.warning(f"Could not save TTS debug WAV: {exc}")
+
+        if stop_event.is_set():
+            return max(time.perf_counter() - started, 0.0)
+
+        if on_first_audio is not None:
+            on_first_audio(time.perf_counter() - started)
+
+        # Preferred Windows path: exact SoundCard speaker selected in the UI.
+        if selected_speaker is not None:
+            return self._play_with_soundcard_stream(
+                selected_speaker,
+                (piece for piece in (audio,)),
+                stop_event,
+                None,
+                started,
+            )
+
+        # Legacy/non-Windows fallback.
+        if isinstance(output_device, int):
+            self._play_callback_audio(
+                audio,
+                self.sampling_rate,
+                output_device,
+                stop_event,
+            )
+
         return max(time.perf_counter() - started, 0.0)
 
 
@@ -1394,7 +1425,7 @@ class Pipeline:
         source: Language,
         target: Language,
         input_device: int,
-        output_device: int,
+        output_device: Any,
     ) -> None:
         self.ui = ui
         self.source = source
@@ -1674,6 +1705,7 @@ class UIBridge:
         self.target_var = tk.StringVar(value="English")
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar()
+        self.output_device_map: dict[str, Any] = {}
         self.status_var = tk.StringVar(value="Ready")
         self.latency_var = tk.StringVar(value="—")
         self.queue_var = tk.StringVar(value="STT 0  •  TXT 0  •  TTS 0")
@@ -1953,18 +1985,10 @@ class UIBridge:
             messagebox.showerror(APP_NAME, "Select valid source and target languages.")
             return
         input_index = find_device_index(input_label)
-        output_index = find_device_index(output_label)
-        if input_index is None or output_index is None:
+        output_device = self._select_output_object(output_label)
+        if input_index is None or output_device is None:
             messagebox.showerror(APP_NAME, "Select both a microphone input and earphones output.")
             return
-
-        if input_index == output_index:
-            answer = messagebox.askyesno(
-                APP_NAME,
-                "Input and output are the same physical device. This can cause feedback. Continue?",
-            )
-            if not answer:
-                return
 
         source = LANGUAGES[source_name]
         target = LANGUAGES[target_name]
@@ -1979,7 +2003,7 @@ class UIBridge:
             source=source,
             target=target,
             input_device=input_index,
-            output_device=output_index,
+            output_device=output_device,
         )
         self._pipeline.start()
 
@@ -2000,15 +2024,42 @@ class UIBridge:
         self.source_var.set(b)
         self.target_var.set(a)
 
+    def _select_output_object(self, label: str):
+        if label in self.output_device_map:
+            return self.output_device_map[label]
+        idx = find_device_index(label)
+        return idx
+
     def refresh_devices(self, initial: bool = False) -> None:
         try:
-            inputs, outputs = list_audio_devices()
+            inputs, portaudio_outputs = list_audio_devices()
         except Exception as exc:
             self.status_var.set(f"Audio devices unavailable: {exc}")
             return
 
         in_values = [label for _, label in inputs]
-        out_values = [label for _, label in outputs]
+
+        # IMPORTANT: when SoundCard is installed, show actual WASAPI speakers in
+        # the UI and pass that exact object into TTS. Do not map through PortAudio.
+        self.output_device_map = {}
+        sc_choices = _soundcard_speaker_choices()
+        if sc_choices:
+            out_values = [label for label, _speaker in sc_choices]
+            self.output_device_map = {label: speaker for label, speaker in sc_choices}
+            # Prefer the Windows default speaker by name, otherwise first physical speaker.
+            try:
+                default_sc = sc.default_speaker()
+                default_name = str(getattr(default_sc, "name", ""))
+                preferred = next(
+                    (label for label, speaker in sc_choices
+                     if _normalize_device_name(getattr(speaker, "name", "")) == _normalize_device_name(default_name)),
+                    out_values[0] if out_values else "",
+                )
+            except Exception:
+                preferred = out_values[0] if out_values else ""
+        else:
+            out_values = [label for _, label in portaudio_outputs]
+
         self.input_combo["values"] = in_values
         self.output_combo["values"] = out_values
 
@@ -2019,19 +2070,23 @@ class UIBridge:
             return values[0] if values else ""
 
         if initial:
-            # Prefer OS default INPUT, then a physical microphone. Prefer a normal
-            # stereo/headphone OUTPUT, avoiding Bluetooth Hands-Free profiles.
             default_input = first_matching(
                 in_values,
                 lambda v: "DEFAULT IN" in v and not _is_likely_virtual_or_loopback(v),
             )
             if not default_input:
                 default_input = first_matching(in_values, lambda v: _preferred_input_name(v))
-            default_output = first_matching(out_values, lambda v: "DEFAULT OUT" in v and _preferred_output_name(v))
-            if not default_output:
-                default_output = first_matching(out_values, lambda v: _preferred_output_name(v))
             self.input_var.set(default_input)
-            self.output_var.set(default_output)
+            if sc_choices:
+                self.output_var.set(preferred)
+            else:
+                default_output = first_matching(
+                    out_values,
+                    lambda v: "DEFAULT OUT" in v and _preferred_output_name(v),
+                )
+                if not default_output:
+                    default_output = first_matching(out_values, lambda v: _preferred_output_name(v))
+                self.output_var.set(default_output)
         else:
             if self.input_var.get() not in in_values:
                 self.input_var.set(in_values[0] if in_values else "")
@@ -2040,20 +2095,28 @@ class UIBridge:
         self.status_var.set("Ready")
 
     def test_output(self) -> None:
-        idx = find_device_index(self.output_var.get())
-        if idx is None:
+        output = self._select_output_object(self.output_var.get())
+        if output is None:
             messagebox.showwarning(APP_NAME, "Select an output device first.")
             return
         try:
-            fs = get_output_sample_rate(idx, 44100)
-        except Exception as exc:
-            self._show_error(f"Output device sample-rate check failed: {exc}")
-            return
-        duration = 0.5
-        t = np.arange(int(fs * duration), dtype=np.float32) / fs
-        tone = 0.08 * np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
-        try:
-            sd.play(tone, samplerate=fs, device=idx, blocking=False)
+            fs = 48000
+            duration = 0.7
+            t = np.arange(int(fs * duration), dtype=np.float32) / fs
+            tone = 0.08 * np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+            if sc is not None and hasattr(output, "play"):
+                channels_available = getattr(output, "channels", 2)
+                channels = max(1, min(int(channels_available) if isinstance(channels_available, int) else 2, 2))
+                arr = np.repeat(tone[:, None], 2, axis=1) if channels == 2 else tone[:, None]
+                with output.player(samplerate=fs, channels=channels, blocksize=512, exclusive_mode=False) as player:
+                    player.play(arr.astype(np.float32, copy=False))
+                    # SoundCard Player.play() queues audio asynchronously. Keep the
+                    # player context alive until the tone has actually drained.
+                    time.sleep(duration + 0.15)
+            elif isinstance(output, int):
+                sd.play(tone, samplerate=fs, device=output, blocking=False)
+            else:
+                raise RuntimeError("Selected output cannot be opened")
             self.status_var.set("Output test: 440 Hz tone")
         except Exception as exc:
             self._show_error(f"Output test failed: {exc}")
@@ -2063,14 +2126,14 @@ class UIBridge:
         if self.running:
             messagebox.showinfo(APP_NAME, "Stop the live translator before running the isolated TTS test.")
             return
-        output_index = find_device_index(self.output_var.get())
-        if output_index is None:
+        output = self._select_output_object(self.output_var.get())
+        if output is None:
             messagebox.showwarning(APP_NAME, "Select an output device first.")
             return
 
         target_name = self.target_var.get().strip() or "Hindi"
         target = LANGUAGES.get(target_name, LANGUAGES["Hindi"])
-        self.status_var.set("Running isolated Parler-TTS test...")
+        self.status_var.set("Running isolated Parler-TTS test through selected speaker...")
 
         def run() -> None:
             try:
@@ -2083,7 +2146,7 @@ class UIBridge:
                 }.get(target.name, "नमस्ते, यह भाषा साथी का परीक्षण है।")
                 elapsed = engine.stream_to_output(
                     sample_text,
-                    output_index,
+                    output,
                     threading.Event(),
                     on_first_audio=lambda d: self.status(f"TTS first audio: {d:.2f}s"),
                 )
@@ -2131,6 +2194,15 @@ def print_environment() -> None:
     print(f"Model compute choice: {choose_compute_device()}")
     print(f"Whisper device/compute: {choose_whisper_device()}")
     print(f"SoundCard available: {sc is not None}")
+    print(f"ParlerTTSStreamer available: {ParlerTTSStreamer is not None}")
+    if sc is not None:
+        try:
+            speakers = sc.all_speakers()
+            print(f"SoundCard speakers: {len(speakers)}")
+            for i, speaker in enumerate(speakers[:10]):
+                print(f"  SC:{i}: {getattr(speaker, 'name', 'unknown')} ({getattr(speaker, 'channels', '?')} ch)")
+        except Exception as exc:
+            print(f"SoundCard speaker enumeration failed: {exc}")
     print(f"Model root: {MODEL_ROOT}")
     for p in [STT_DIR, EN_INDIC_DIR, INDIC_EN_DIR, INDIC_INDIC_DIR, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER]:
         print(f"{'OK ' if p.exists() else 'MISS'} {p}")
