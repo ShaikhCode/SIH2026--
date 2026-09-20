@@ -138,7 +138,7 @@ export const api = {
   approvePractice: (id: number, questionId: number, approved: boolean) =>
     request<any>(`/lessons/${id}/practice/${questionId}/approve`, { method: 'POST', body: JSON.stringify({ approved }) }),
   worksheet: (id: number) => request<{ html: string; [key: string]: unknown }>(`/lessons/${id}/generate-worksheet`, { method: 'POST' }),
-  publish: (id: number) => request<LessonPack>(`/lessons/${id}/publish`, { method: 'POST' }),
+  publish: (id: number) => request<{ ok: boolean; lesson_id: number; version_id: number; published_at: string | null }>(`/lessons/${id}/publish`, { method: 'POST' }),
   versions: (id: number) => request<VersionSummary[]>(`/lessons/${id}/versions`),
   newVersion: (id: number, body: Record<string, unknown>) =>
     request<LessonPack>(`/lessons/${id}/versions`, { method: 'POST', body: JSON.stringify(body) }),

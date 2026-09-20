@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { useAuth } from './features/auth/AuthContext';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import { Shell } from './components/Shell';
 import LoginPage from './pages/LoginPage';
 import LandingPage from './pages/LandingPage';
@@ -24,7 +25,7 @@ function Protected({ children }: { children: ReactNode }) {
 
 
 export default function App() {
-  return <Routes>
+  return <AppErrorBoundary><Routes>
     <Route path="/login" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
     <Route path="/" element={<LandingPage />} />
@@ -39,5 +40,5 @@ export default function App() {
     <Route path="/offline" element={<Protected><OfflinePage /></Protected>} />
     <Route path="/diagnostics" element={<Protected><DiagnosticsPage /></Protected>} />
     <Route path="*" element={<NotFoundPage />} />
-  </Routes>;
+  </Routes></AppErrorBoundary>;
 }
