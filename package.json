@@ -1,7 +1,7 @@
 {
   "name": "bhashasaathi-local",
   "private": true,
-  "version": "14.0.0",
+  "version": "17.0.0",
   "scripts": {
     "web:dev": "npm --prefix apps/web run dev",
     "web:build": "npm --prefix apps/web run build",

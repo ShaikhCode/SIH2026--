@@ -5,6 +5,16 @@ import threading
 from pathlib import Path
 from typing import Any
 
+# Keep CPU inference predictable on laptops. Too many OpenMP/MKL threads can
+# make concurrent FastAPI requests slower because the translation/TTS models
+# fight for the same cores. The user can override this with BHASHA_TORCH_THREADS.
+_thread_setting = (os.getenv('TORCH_THREADS') or os.getenv('BHASHA_TORCH_THREADS') or '').strip()
+if not _thread_setting:
+    cores = os.cpu_count() or 8
+    _thread_setting = str(max(2, min(8, cores // 2 if cores > 4 else cores)))
+    os.environ.setdefault('OMP_NUM_THREADS', _thread_setting)
+    os.environ.setdefault('MKL_NUM_THREADS', _thread_setting)
+
 import torch
 
 from ..adapters.stt import FasterWhisperAdapter
@@ -23,12 +33,21 @@ class ModelManager:
     """
 
     def __init__(self) -> None:
-        thread_setting = os.getenv('BHASHA_TORCH_THREADS', '').strip()
+        thread_setting = (os.getenv('TORCH_THREADS') or os.getenv('BHASHA_TORCH_THREADS') or '').strip() or _thread_setting
         if thread_setting.isdigit():
             try:
                 torch.set_num_threads(max(1, int(thread_setting)))
             except Exception:
                 pass
+        try:
+            torch.set_num_interop_threads(1)
+        except RuntimeError:
+            # PyTorch only allows this before parallel work has started.
+            pass
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            pass
         self._registry_lock = threading.RLock()
         self.translation = IndicTrans2Adapter(
             MODELS_ROOT,
@@ -36,6 +55,11 @@ class ModelManager:
             settings.max_translation_chars,
             text_beams=settings.text_translation_beams,
             route_cache_limit=settings.translation_route_cache_limit,
+            max_new_tokens=settings.translation_max_new_tokens,
+            live_max_new_tokens=settings.live_translation_max_new_tokens,
+            input_token_budget=settings.translation_input_token_budget,
+            batch_size=settings.translation_batch_size,
+            inference_lock_enabled=settings.translation_inference_lock,
         )
         self.stt = FasterWhisperAdapter(MODELS_ROOT, settings.cpu_only)
         self.tts = IndicParlerTTSAdapter(MODELS_ROOT, settings.cpu_only, settings.parler_description_tokenizer)
@@ -63,6 +87,11 @@ class ModelManager:
                 'keep_models_loaded': settings.keep_models_loaded,
                 'translation_beams': settings.text_translation_beams,
                 'live_translation_beams': settings.live_translation_beams,
+                'translation_max_new_tokens': settings.translation_max_new_tokens,
+                'translation_input_token_budget': settings.translation_input_token_budget,
+                'translation_batch_size': settings.translation_batch_size,
+                'live_translation_max_new_tokens': settings.live_translation_max_new_tokens,
+                'torch_threads': torch.get_num_threads(),
                 'live_segment_ms': settings.max_live_segment_ms,
                 'live_queue_size': settings.live_queue_size,
                 'live_tts_stream_seconds': settings.live_tts_stream_seconds,
@@ -75,14 +104,14 @@ class ModelManager:
 
     def translate(self, text: str, src: str, tgt: str, *, fast: bool = False) -> str:
         try:
-            return self.translation.translate(text, src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams)
+            return self.translation.translate(text, src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams, max_new_tokens=settings.live_translation_max_new_tokens if fast else settings.translation_max_new_tokens)
         except Exception as exc:
             self._record_error('translation', exc)
             raise
 
     def translate_many(self, texts: list[str], src: str, tgt: str, *, fast: bool = False) -> list[str]:
         try:
-            return self.translation.translate_many(texts, src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams)
+            return self.translation.translate_many(texts, src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams, max_new_tokens=settings.live_translation_max_new_tokens if fast else settings.translation_max_new_tokens)
         except Exception as exc:
             self._record_error('translation', exc)
             raise
@@ -116,7 +145,17 @@ class ModelManager:
             raise
 
     def warm_translation(self, src: str, tgt: str, *, fast: bool = False) -> dict[str, Any]:
-        return self.translation.warm(src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams)
+        return self.translation.warm(src, tgt, beams=settings.live_translation_beams if fast else settings.text_translation_beams, max_new_tokens=settings.live_translation_max_new_tokens if fast else settings.translation_max_new_tokens)
+
+    def warm_translation_routes(self, src: str, targets: list[str]) -> None:
+        """Warm the exact classroom routes in the background, one at a time."""
+        for tgt in targets:
+            if tgt == src:
+                continue
+            try:
+                self.translation.warm(src, tgt, beams=settings.text_translation_beams, max_new_tokens=settings.translation_max_new_tokens)
+            except Exception as exc:
+                self._record_error('translation_warm', exc)
 
     def warm_live(self, src: str, tgt: str) -> dict[str, Any]:
         """Load only what the live pipeline needs; loading is idempotent."""
@@ -124,7 +163,7 @@ class ModelManager:
         self.stt.warm()
         results['stt'] = True
         if src != tgt:
-            results['translation'] = self.translation.warm(src, tgt, beams=settings.live_translation_beams)
+            results['translation'] = self.translation.warm(src, tgt, beams=settings.live_translation_beams, max_new_tokens=settings.live_translation_max_new_tokens)
         else:
             results['translation'] = {'route': 'bypass', 'loaded': True}
         self.tts.warm()

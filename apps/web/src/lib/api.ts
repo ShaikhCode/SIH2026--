@@ -122,10 +122,15 @@ export const api = {
     request<LessonPack>(`/lessons/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   deleteLesson: (id: number) => request<{ ok: boolean }>(`/lessons/${id}`, { method: 'DELETE' }),
   analyze: (id: number) => request<any>(`/lessons/${id}/analyze`, { method: 'POST' }),
-  translate: (id: number, target_language: Lang) =>
-    request<any>(`/lessons/${id}/translate`, { method: 'POST', body: JSON.stringify({ target_language }) }),
+  prepareConcepts: (id: number) => request<any>(`/lessons/${id}/prepare-concepts`, { method: 'POST' }),
+  translate: (id: number, target_language: Lang, source_text?: string, clean_transcript?: string, source_language?: Lang) =>
+    request<any>(`/lessons/${id}/translate`, { method: 'POST', body: JSON.stringify({ target_language, source_text, clean_transcript, source_language }) }),
   verify: (id: number, body: { translation_id: number; approved: boolean; edited_text?: string; native_review_status?: 'NOT_REVIEWED' | 'PENDING' | 'REJECTED' }) =>
-    request<LessonPack>(`/lessons/${id}/verify-translation`, { method: 'POST', body: JSON.stringify(body) }),
+    request<any>(`/lessons/${id}/verify-translation`, { method: 'POST', body: JSON.stringify(body) }),
+  backTranslate: (id: number, translationId: number) =>
+    request<{ translation_id: number; back_translation: string; cached: boolean; back_translation_ms: number }>(`/lessons/${id}/translation/${translationId}/back-translate`, { method: 'POST' }),
+  preparations: (id: number) => request<any[]>(`/lessons/${id}/preparations`),
+  retryPreparation: (id: number, jobId: number) => request<any>(`/lessons/${id}/preparations/${jobId}/retry`, { method: 'POST' }),
   tts: (id: number, target_language: Lang) =>
     request<any>(`/lessons/${id}/tts`, { method: 'POST', body: JSON.stringify({ target_language, speaker: 'classroom_teacher' }) }),
   practice: (id: number, language: Lang, count = 4) =>
@@ -133,8 +138,6 @@ export const api = {
   approvePractice: (id: number, questionId: number, approved: boolean) =>
     request<any>(`/lessons/${id}/practice/${questionId}/approve`, { method: 'POST', body: JSON.stringify({ approved }) }),
   worksheet: (id: number) => request<{ html: string; [key: string]: unknown }>(`/lessons/${id}/generate-worksheet`, { method: 'POST' }),
-  flashcards: (id: number, language: Lang) =>
-    request<any[]>(`/lessons/${id}/generate-flashcards`, { method: 'POST', body: JSON.stringify({ language }) }),
   publish: (id: number) => request<LessonPack>(`/lessons/${id}/publish`, { method: 'POST' }),
   versions: (id: number) => request<VersionSummary[]>(`/lessons/${id}/versions`),
   newVersion: (id: number, body: Record<string, unknown>) =>
@@ -160,6 +163,8 @@ export const api = {
   studentPackage: (id: number) => request<LessonPack>(`/student/lessons/${id}/package`),
   attempt: (body: { lesson_id: number; lesson_version_id: number; language: Lang; answers: Record<string, unknown> }) =>
     request<any>('/student/attempts', { method: 'POST', body: JSON.stringify(body) }),
+  translationFeedback: (translationId: number, status: 'CONFIRMED' | 'REPORTED', comment = '') =>
+    request<any>(`/student/translations/${translationId}/feedback`, { method: 'POST', body: JSON.stringify({ status, comment }) }),
   progress: () => request<any>('/student/progress'),
 
   syncPush: (device_id: string, operations: any[]) =>

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from ..models import Artifact, Lesson, LessonVersion, PracticeQuestion, Translation
+from ..models import Lesson, LessonVersion, Translation
 
 
 def now():
@@ -13,6 +13,13 @@ def now():
 
 
 def can_publish(db: Session, lesson: Lesson, version: LessonVersion) -> tuple[bool, list[str]]:
+    """Only the human-approved translated text is publication-critical.
+
+    Audio and practice are downstream background deliverables. They may still be
+    running when the lesson is published and can complete against the same exact
+    lesson version afterwards. Validation flags remain visible as warnings, but an
+    explicit teacher approval is the human override for a flagged translation.
+    """
     problems: list[str] = []
     translations = {
         row.target_language: row
@@ -20,6 +27,10 @@ def can_publish(db: Session, lesson: Lesson, version: LessonVersion) -> tuple[bo
     }
     all_languages = ('eng_Latn', 'hin_Deva', 'mar_Deva')
     required = tuple(language for language in all_languages if language != lesson.source_language)
+
+    if not version.source_text.strip() and not version.clean_transcript.strip():
+        problems.append('SOURCE_TEXT_MISSING')
+
     for lang in required:
         row = translations.get(lang)
         if not row:
@@ -27,52 +38,9 @@ def can_publish(db: Session, lesson: Lesson, version: LessonVersion) -> tuple[bo
             continue
         if not row.translated_text.strip():
             problems.append(f'EMPTY_TRANSLATION:{lang}')
+            continue
         if row.verification_status != 'TEACHER_APPROVED':
             problems.append(f'TRANSLATION_NOT_APPROVED:{lang}')
-        flags = set(json.loads(row.flags_json or '[]'))
-        blocking = {
-            'EMPTY_OUTPUT',
-            'TARGET_SCRIPT_ANOMALY',
-            'NUMBER_MISMATCH',
-            'SOURCE_LANGUAGE_LEAKAGE',
-            'LENGTH_ANOMALY',
-        }
-        if flags & blocking:
-            problems.append(f'TRANSLATION_FLAGS:{lang}')
-        if row.confidence < 0.60:
-            problems.append(f'LOW_TRANSLATION_CONFIDENCE:{lang}')
-
-    if not version.source_text.strip() and not version.clean_transcript.strip():
-        problems.append('SOURCE_TEXT_MISSING')
-    if not json.loads(version.learning_objectives_json or '[]'):
-        problems.append('LEARNING_OUTCOME_MISSING')
-    if not json.loads(version.concepts_json or '[]'):
-        problems.append('CONCEPTS_MISSING')
-
-    approved_questions = db.query(PracticeQuestion).filter_by(
-        lesson_version_id=version.id,
-        approved=True,
-    ).count()
-    if approved_questions == 0:
-        problems.append('PRACTICE_NOT_APPROVED')
-    for language in required:
-        approved_for_language = db.query(PracticeQuestion).filter_by(
-            lesson_version_id=version.id,
-            language=language,
-            approved=True,
-        ).count()
-        if approved_for_language == 0:
-            problems.append(f'PRACTICE_NOT_APPROVED:{language}')
-
-    # Every learner-facing translated target gets its own cached audio artifact.
-    for language in required:
-        audio_count = db.query(Artifact).filter_by(
-            lesson_version_id=version.id,
-            type='audio',
-            language=language,
-        ).count()
-        if audio_count == 0:
-            problems.append(f'AUDIO_NOT_PREPARED:{language}')
 
     return not problems, problems
 

@@ -1,0 +1,18 @@
+BhashaSaathi FinalV16 — Test Results
+
+PASS  Python compileall (apps/api/app, core/layer2, scripts)
+PASS  FinalV16 static audit script
+PASS  FastAPI app import
+PASS  GET /api/v1/health
+PASS  GET /api/v1/live/languages — exactly English, Hindi, Marathi
+PASS  Translation route uses faster interactive beam profile
+PASS  Translation/audio stale-artifact invalidation check
+PASS  Live PCM playback explicit HTMLAudioElement.play() check
+PASS  Live audio_ready event check
+PASS  Background audio preparation UI check
+PASS  Text approval remains the only approval gate for TTS
+NOT RUN  Full Vite production build — node_modules/package install is not present in the sandbox
+NOT RUN  Real model latency benchmark — user's local model weights/hardware are not mounted here
+NOT RUN  Physical Buds playback — browser/Windows hardware test requires user's machine
+
+Important: no claim is made that live TTS is universally low-latency; actual timing depends on the local CPU/GPU and browser audio device.

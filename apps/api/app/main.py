@@ -8,13 +8,15 @@ from .core.config import settings, origins
 from .db import init_db
 from .api.routes import auth, groups, lessons, live, runtime, student, sync
 from .services.model_manager import manager
+from .services.background_prep import resume_pending_preparations
 
 logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
 init_db()
+resume_pending_preparations()
 
 app = FastAPI(
     title='BhashaSaathi Local API',
-    version='14.0.0',
+    version='18.0.0',
     description='Teacher-controlled multilingual classroom learning for SIH26042.',
 )
 app.add_middleware(
@@ -78,7 +80,7 @@ app.include_router(runtime.router, prefix='/api/v1')
 
 @app.get('/api/v1/health')
 def health():
-    return {'status': 'ok', 'product': 'BhashaSaathi', 'version': '14.0.0', 'mode': 'local'}
+    return {'status': 'ok', 'product': 'BhashaSaathi', 'version': '18.0.0', 'mode': 'local'}
 
 
 @app.get('/api/v1/health/models')

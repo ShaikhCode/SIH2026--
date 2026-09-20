@@ -1,0 +1,15 @@
+FinalV19 test results
+=====================
+PYTHON_COMPILEALL_PASS
+TARGET_PY_COMPILE_PASS
+FASTAPI_IMPORT_PASS
+TS_TSX_SYNTAX_PASS (23 files)
+TRANSLATION_CHUNKING_PASS
+TTS_CHUNKING_PASS
+FLASHCARD_REFERENCE_SCAN_PASS
+FINALV19_STATIC_AUDIT_PASS (10/10)
+
+Build limitation
+----------------
+The final Vite production build was not executed in the sandbox because npm dependency installation exceeded the available build window.
+Real IndicTrans2 / Parler-TTS inference and Windows Buds playback require the user's local model environment.

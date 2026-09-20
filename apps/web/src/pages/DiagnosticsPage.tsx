@@ -71,9 +71,9 @@ export default function DiagnosticsPage() {
       <SectionTitle title="Demo checklist" subtitle="These are the real product stages that must be demonstrated live." action={<Button variant="ghost" onClick={copy}><Clipboard size={15} /> Copy diagnostics</Button>} />
       <div className="demo-check-grid">
         {[
-          'Login', 'Create classroom', 'Create lesson', 'Whisper transcript', 'Concepts + learning outcome',
+          'Login', 'Create classroom', 'Create lesson', 'Whisper transcript', 'Concept extraction',
           'Hindi → English', 'Hindi → Marathi', 'Translation Guard', 'Teacher approval', 'Marathi TTS',
-          'Worksheet + flashcards', 'Publish package', 'Offline lesson', 'Offline practice + sync',
+          'Worksheet + prepared practice', 'Publish package', 'Offline lesson', 'Offline practice + sync',
         ].map((item) => <div key={item}><CheckCircle2 /> {item}</div>)}
       </div>
       <div className="footer-note">Do not label an AI-generated Marathi translation as automatically verified without qualified language review. Do not claim zero translation errors or guaranteed on-device generative AI on low-end Android.</div>

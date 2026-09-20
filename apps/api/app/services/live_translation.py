@@ -421,6 +421,11 @@ class LiveTranslationSession:
                         })
                 total_ms = (time.perf_counter() - chunk.created_at) * 1000.0
                 self.emit_json({
+                    'type': 'audio_ready',
+                    'sequence': chunk.sequence,
+                    'has_audio': True,
+                })
+                self.emit_json({
                     'type': 'audio_end',
                     'sequence': chunk.sequence,
                     'transcript': transcript,

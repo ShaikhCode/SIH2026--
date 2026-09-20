@@ -1,0 +1,27 @@
+BhashaSaathi FinalV17 — Test Results
+
+PASS  Python compileall (apps/api, core, scripts)
+PASS  Static speed regression audit (13/13 checks)
+PASS  FastAPI import
+PASS  GET /api/v1/health -> 200
+PASS  GET /api/v1/live/languages -> 200
+PASS  Version reports 17.0.0
+PASS  Live language contract contains English, Hindi, Marathi only
+PASS  Translation endpoint source payload schema compiles
+PASS  Translation timing payload code compiles
+PASS  TTS timing/artifact response code compiles
+
+NOT RUN IN SANDBOX
+- Real IndicTrans2 model inference (model weights are deliberately not bundled)
+- Real Parler-TTS inference/playback
+- Real faster-whisper inference
+- Windows Buds / WASAPI output verification
+- Full browser/Vite production build because node_modules is not included in the build workspace
+
+Run on the real Windows machine:
+    python scripts\verify_models.py
+    python scripts\model_lab.py
+    python scripts\perf_probe.py --source hin_Deva --target eng_Latn --text "हमारी कक्षा में पौधों के बारे में सीखते हैं।" --repeat 3 --tts
+    cd apps\web
+    npm install
+    npm run build

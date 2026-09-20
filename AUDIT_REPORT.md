@@ -1,3 +1,7 @@
+## FinalV18 flow changes
+
+See `FINALV18_README.md` and `FINALV18_SPEED_AUDIT.md`.
+
 # BhashaSaathi — Final Product + Local Model Audit
 
 ## Audit objective

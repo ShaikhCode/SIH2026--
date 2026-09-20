@@ -133,6 +133,33 @@ class Attempt(Base):
     synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class PreparationJob(Base):
+    __tablename__ = 'preparation_jobs'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lesson_version_id: Mapped[int] = mapped_column(ForeignKey('lesson_versions.id'), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    language: Mapped[str] = mapped_column(String(30), default='')
+    status: Mapped[str] = mapped_column(String(20), default='QUEUED', index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    __table_args__ = (UniqueConstraint('lesson_version_id', 'kind', 'language', name='uq_preparation_job_version_kind_language'),)
+
+
+class TranslationFeedback(Base):
+    __tablename__ = 'translation_feedback'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    translation_id: Mapped[int] = mapped_column(ForeignKey('translations.id'), index=True)
+    lesson_version_id: Mapped[int] = mapped_column(ForeignKey('lesson_versions.id'), index=True)
+    student_id: Mapped[int] = mapped_column(ForeignKey('users.id'), index=True)
+    status: Mapped[str] = mapped_column(String(20))
+    comment: Mapped[str] = mapped_column(Text, default='')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+    __table_args__ = (UniqueConstraint('translation_id', 'student_id', name='uq_translation_feedback_student'),)
+
+
 class SyncRecord(Base):
     __tablename__ = 'sync_records'
     id: Mapped[int] = mapped_column(primary_key=True)

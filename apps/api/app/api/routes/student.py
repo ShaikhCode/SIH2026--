@@ -3,8 +3,8 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from ...db import get_db
-from ...models import Lesson, LessonVersion, Membership, PracticeQuestion, Attempt
-from ...schemas import AttemptIn
+from ...models import Lesson, LessonVersion, Membership, PracticeQuestion, Attempt, Translation, TranslationFeedback
+from ...schemas import AttemptIn, TranslationFeedbackIn
 from ...core.security import current_user
 from ...services.content import evaluate_attempt
 from .lessons import pack
@@ -16,7 +16,7 @@ router = APIRouter(prefix='/student', tags=['student'])
 def student_lessons(db: Session = Depends(get_db), user=Depends(current_user)):
     ids = [m.group_id for m in db.query(Membership).filter_by(user_id=user.id).all()]
     rows = db.query(Lesson).filter(Lesson.group_id.in_(ids or [-1]), Lesson.status == 'PUBLISHED').order_by(Lesson.updated_at.desc()).all()
-    return [pack(db, lesson) for lesson in rows]
+    return [pack(db, lesson, viewer_id=user.id) for lesson in rows]
 
 
 @router.get('/lessons/{lesson_id}/package')
@@ -27,7 +27,7 @@ def package(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_
     allowed = bool(db.query(Membership).filter_by(group_id=lesson.group_id, user_id=user.id).first())
     if not allowed:
         raise HTTPException(403, detail={'code': 'LESSON_ACCESS_DENIED', 'message': 'Join the classroom before opening this lesson.'})
-    return pack(db, lesson)
+    return pack(db, lesson, viewer_id=user.id, include_worksheet=True)
 
 
 @router.post('/attempts')
@@ -76,3 +76,32 @@ def progress(db: Session = Depends(get_db), user=Depends(current_user)):
             for item in attempts[:8]
         ],
     }
+
+
+@router.post('/translations/{translation_id}/feedback')
+def translation_feedback(translation_id: int, x: TranslationFeedbackIn, db: Session = Depends(get_db), user=Depends(current_user)):
+    translation = db.get(Translation, translation_id)
+    if not translation:
+        raise HTTPException(404, detail={'code': 'TRANSLATION_NOT_FOUND', 'message': 'Translation not found.'})
+    version = db.get(LessonVersion, translation.lesson_version_id)
+    lesson = db.get(Lesson, version.lesson_id) if version else None
+    if not lesson or lesson.status != 'PUBLISHED':
+        raise HTTPException(404, detail={'code': 'PUBLISHED_LESSON_NOT_FOUND', 'message': 'This lesson is not published.'})
+    membership = db.query(Membership).filter_by(group_id=lesson.group_id, user_id=user.id).first()
+    if not membership:
+        raise HTTPException(403, detail={'code': 'GROUP_ACCESS_DENIED', 'message': 'Join the classroom before reviewing translations.'})
+    row = db.query(TranslationFeedback).filter_by(translation_id=translation.id, student_id=user.id).first()
+    if not row:
+        row = TranslationFeedback(
+            translation_id=translation.id,
+            lesson_version_id=version.id,
+            student_id=user.id,
+            status=x.status,
+            comment=x.comment.strip(),
+        )
+        db.add(row)
+    else:
+        row.status = x.status
+        row.comment = x.comment.strip()
+    db.commit()
+    return {'translation_id': translation.id, 'status': row.status, 'comment': row.comment}

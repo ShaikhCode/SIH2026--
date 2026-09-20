@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AudioLines, CircleStop, Headphones, History, Languages, Mic, Play, RefreshCw,
-  Save, ShieldCheck, Trash2, Wifi, WifiOff, X, ArrowDownUp,
+  Save, ShieldCheck, Trash2, Wifi, WifiOff, X, ArrowDownUp, Volume2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Page, SectionTitle } from '../components/Shell';
@@ -97,6 +97,8 @@ export default function LiveTranslatePage() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [turns, setTurns] = useState<LiveTurn[]>([]);
   const [playing, setPlaying] = useState(false);
+  const [audioGenerating, setAudioGenerating] = useState(false);
+  const [audioReady, setAudioReady] = useState(false);
   const currentTurnsRef = useRef<Map<number, LiveTurn>>(new Map());
   const pendingAudioRef = useRef<Map<number, Blob>>(new Map());
   const currentSessionRef = useRef<LiveHistoryEntry | null>(null);
@@ -211,12 +213,14 @@ export default function LiveTranslatePage() {
       audio.src = '';
       audio.srcObject = destination.stream;
       audio.autoplay = true;
+      audio.muted = false;
       playbackContextRef.current = context;
       playbackDestinationRef.current = destination;
       playbackNextTimeRef.current = context.currentTime + 0.05;
     }
     await setOutputSink();
     await context.resume();
+    try { await audio.play(); } catch { /* user gesture policy; context still remains ready */ }
     return { context, destination };
   }, [setOutputSink]);
 
@@ -267,6 +271,8 @@ export default function LiveTranslatePage() {
     playbackQueueRef.current = [];
     playingRef.current = false;
     setPlaying(false);
+    setAudioGenerating(false);
+    setAudioReady(false);
     const playbackAudio = playbackAudioRef.current;
     playbackAudio?.pause();
     if (playbackAudio) { playbackAudio.srcObject = null; playbackAudio.src = ''; }
@@ -353,6 +359,8 @@ export default function LiveTranslatePage() {
       setTurns([]);
       setTranscript('');
       setTranslation('');
+      setAudioGenerating(false);
+      setAudioReady(false);
 
       ws.onopen = () => {
         setStatus('listening');
@@ -391,10 +399,15 @@ export default function LiveTranslatePage() {
             currentTurnsRef.current.set(payload.sequence, { ...existing, translation: payload.text || '' });
           } else if (payload.type === 'audio_start') {
             pendingSequenceRef.current = payload.sequence;
+            setAudioGenerating(true);
+            setAudioReady(false);
             activeAudioModeRef.current = payload.mode === 'pcm' ? 'pcm' : 'wav';
             activeAudioRateRef.current = Number(payload.sample_rate) || 44100;
             pendingPcmRef.current.set(payload.sequence, []);
             setLatency((old) => ({ ...old, tts: payload.tts_ms ?? payload.time_to_first_audio_ms, total: payload.total_ms }));
+          } else if (payload.type === 'audio_ready') {
+            setAudioGenerating(false);
+            setAudioReady(Boolean(payload.has_audio));
           } else if (payload.type === 'audio_end') {
             const current = currentTurnsRef.current.get(payload.sequence);
             if (current) {
@@ -412,8 +425,10 @@ export default function LiveTranslatePage() {
               };
               currentTurnsRef.current.set(payload.sequence, completed);
               setLatency((old) => ({ ...old, tts: payload.tts_ms ?? old.tts, total: payload.total_ms ?? old.total }));
+              setAudioGenerating(false);
+              setAudioReady(Boolean(audio));
               setTurns(Array.from(currentTurnsRef.current.values()).sort((a, b) => a.sequence - b.sequence));
-              await persistCurrentSession();
+              void persistCurrentSession();
             }
             pendingSequenceRef.current = null;
           } else if (payload.type === 'error') {
@@ -423,6 +438,7 @@ export default function LiveTranslatePage() {
             setPlaying(false);
             setError(`${payload.stage || 'pipeline'}: ${payload.message || 'Unknown error'}`);
             setStatus('error');
+            setAudioGenerating(false);
           }
           return;
         }
@@ -544,12 +560,12 @@ export default function LiveTranslatePage() {
 
       <div className="live-output-grid">
         <Card><SectionTitle title="What was heard" subtitle={`Whisper · ${nativeLabel(source)}`} /><div className="live-text-box">{transcript || <span className="muted">Speak into the microphone to see the live transcript.</span>}</div></Card>
-        <Card><SectionTitle title="What the listener hears" subtitle={`IndicTrans2 → Parler-TTS · ${nativeLabel(target)}`} /><div className="live-text-box translated">{translation || <span className="muted">Your translated speech will appear here and play in your selected output.</span>}</div>{playing && <Status tone="success"><Play size={14} /> Playing translated audio</Status>}</Card>
+        <Card><SectionTitle title="What the listener hears" subtitle={`IndicTrans2 → Parler-TTS · ${nativeLabel(target)}`} /><div className="live-text-box translated">{translation || <span className="muted">Your translated speech will appear here and play in your selected output.</span>}</div><div className="live-audio-status">{audioGenerating ? <Status tone="info"><RefreshCw size={14} className="spin" /> Generating live audio…</Status> : audioReady ? <Status tone="success"><Volume2 size={14} /> Live audio generated</Status> : translation ? <Status tone="warning"><Headphones size={14} /> Waiting for audio</Status> : null}{playing && <Status tone="success"><Play size={14} /> Playing translated audio</Status>}</div></Card>
       </div>
 
       <Card className="live-history-card"><SectionTitle title="Session history" subtitle="Live sessions are temporary by default. Unsaved sessions expire after 24 hours; saved sessions remain until you delete them." action={<Status tone="info"><History size={14} /> Device-only history</Status>} />
         {turns.length > 0 && <div className="current-session-bar"><div><strong>Current session</strong><span>{turns.length} completed translation{turns.length === 1 ? '' : 's'}</span></div><div className="button-row"><Button variant="secondary" onClick={() => void saveCurrent()} disabled={!currentSessionId}><Save size={15} /> Save session</Button><Button variant="ghost" onClick={() => void persistCurrentSession()}><RefreshCw size={15} /> Save temporary</Button></div></div>}
-        {history.length === 0 ? <div className="empty-live-history"><History size={28} /><strong>No saved or temporary sessions yet.</strong><span>Your current session will appear here after the first translated turn.</span></div> : <div className="history-list">{history.slice(0, 8).map((entry) => <div className={`history-card ${selectedHistory === entry.id ? 'selected' : ''}`} key={entry.id}><button className="history-main" onClick={() => setSelectedHistory(selectedHistory === entry.id ? null : entry.id)}><div><strong>{nativeLabel(entry.source)} → {nativeLabel(entry.target)}</strong><span>{new Date(entry.startedAt).toLocaleString()} · {entry.turns.length} turn{entry.turns.length === 1 ? '' : 's'}</span></div><Status tone={entry.saved ? 'success' : 'warning'}>{entry.saved ? 'Saved' : 'Temporary'}</Status></button><div className="history-actions"><button onClick={() => void setLiveSaved(entry.id, !entry.saved).then(refreshHistory)}>{entry.saved ? 'Make temporary' : 'Save'}</button><button onClick={() => void deleteHistory(entry.id)}><Trash2 size={14} /> Delete</button></div>{selectedHistory === entry.id && <div className="history-turns">{entry.turns.map((turn) => <div className="history-turn" key={turn.id}><div><strong>{turn.transcript}</strong><span>{turn.translation}</span></div>{turn.audio ? <Button variant="secondary" onClick={() => void replay(turn)} title="Hear this translation"><Play size={14} /> Hear audio</Button> : <Status tone="warning">Audio not captured</Status>}</div>)}</div>}</div>)}</div>}
+        {history.length === 0 ? <div className="empty-live-history"><History size={28} /><strong>No saved or temporary sessions yet.</strong><span>Your current session will appear here after the first translated turn.</span></div> : <div className="history-list">{history.slice(0, 8).map((entry) => <div className={`history-card ${selectedHistory === entry.id ? 'selected' : ''}`} key={entry.id}><button className="history-main" onClick={() => setSelectedHistory(selectedHistory === entry.id ? null : entry.id)}><div><strong>{nativeLabel(entry.source)} → {nativeLabel(entry.target)}</strong><span>{new Date(entry.startedAt).toLocaleString()} · {entry.turns.length} turn{entry.turns.length === 1 ? '' : 's'}</span></div><Status tone={entry.saved ? 'success' : 'warning'}>{entry.saved ? 'Saved' : 'Temporary'}</Status></button><div className="history-actions"><button onClick={() => void setLiveSaved(entry.id, !entry.saved).then(refreshHistory)}>{entry.saved ? 'Make temporary' : 'Save'}</button><button onClick={() => void deleteHistory(entry.id)}><Trash2 size={14} /> Delete</button></div>{selectedHistory === entry.id && <div className="history-turns">{entry.turns.map((turn) => <div className="history-turn" key={turn.id}><div><strong>{turn.transcript}</strong><span>{turn.translation}</span></div>{turn.audio ? <Button variant="secondary" onClick={() => void replay(turn)} title="Hear this translation"><Play size={14} /> Hear audio</Button> : <Status tone="warning">Audio not available for this turn</Status>}</div>)}</div>}</div>)}</div>}
       </Card>
     </Page>
   </>;

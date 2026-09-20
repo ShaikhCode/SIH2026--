@@ -1,221 +1,213 @@
-# BhashaSaathi — Final Local No-Docker Build
+# BhashaSaathi FinalV19
 
-> **Translate the classroom, not just the words.**
->
-> **AI prepares. The educator decides. The learner learns.**
+## What this build solves
 
-BhashaSaathi is a teacher-first multilingual classroom platform for SIH26042. The final local build is designed around a real classroom loop: teacher input → speech/text understanding → concepts → multilingual translation → Translation Guard → teacher approval → audio/worksheet/flashcards → publish → student learning → offline practice → sync.
+FinalV19 is the speed/reliability release for the local teacher workflow.
 
-## Locked demo path
+The key rule is:
 
-- Source language can be Hindi, English, or Marathi
-- Marathi showcase in **Devanagari**
-- English + Hindi available as additional translation targets
-- IndicTrans2 for local translation
-- faster-whisper Small for Hindi/English teacher speech
-- Indic Parler-TTS for local/server-side audio generation and caching
-- SQLite + local artifacts
-- IndexedDB + Service Worker for offline student learning
-- No paid API is required at runtime
+> **Teacher approves translated text. Audio and practice continue in the background.**
 
-### Product language decision
+This prevents a slow TTS job from blocking publication.
 
-The current prototype intentionally uses **Marathi** instead of Santhali because the team has chosen a language stack they can demonstrate reliably end-to-end with the local IndicTrans2 and Indic Parler-TTS models. IndicTrans2 officially lists `mar_Deva`, and AI4Bharat's Indic Parler-TTS model lists Marathi as an officially supported language.
+## Supported languages
 
-**SIH26042 compliance note:** the problem statement explicitly asks for Ho, Mundari and Santhali and accepts a minimum of one tribal language at prototype stage. Marathi is therefore a deliberate prototype substitution, not a claim of full SIH language compliance. A tribal-language adapter and qualified native-language review remain required before presenting Marathi as the final deployment language.
+The classroom and live demo are intentionally limited to:
 
-## What is included
+- English
+- Hindi
+- Marathi
 
-### Educator
-
-Authentication, flexible teach + learn accounts, classroom groups, join codes, lesson creation, voice recording/upload, editable STT transcript, learning outcome metadata, concept extraction, deterministic classroom suggestions, Hindi/English/Marathi translation, Translation Guard, teacher editing/approval, cached TTS, worksheet preview, concept flashcards, practice generation, publish, version history and rollback, model/API diagnostics.
-
-### Student
-
-Group lessons, language selection, published lesson player, cached audio, worksheet and concept cards, practice, offline attempts, pending sync queue, reconnect synchronization.
-
-### Trust rules
-
-Original lesson text is preserved. AI output is reviewable. Marathi is never presented as native-verified merely because a model generated it. Publish requires teacher approval and required review flags to be clear. The product never claims zero translation errors.
-
-## Folder layout
+## Main classroom flow
 
 ```text
-BhashaSaathi_Local_NoDocker/
-├─ apps/
-│  ├─ api/
-│  │  ├─ app/
-│  │  │  └─ layer2/        # runtime Layer 2 used by FastAPI
-│  │  ├─ alembic/
-│  │  ├─ data/
-│  │  ├─ models/              # YOUR MODEL WEIGHTS STAY HERE
-│  │  │  ├─ translation/
-│  │  │  ├─ stt/
-│  │  │  └─ tts/
-│  │  └─ requirements.txt
-│  └─ web/
-├─ core/
-│  └─ layer2/              # reference copy
-
-├─ scripts/
-└─ .env.example
+1. Source
+      ↓
+2. Concepts (lightweight, optional metadata)
+      ↓
+3. Languages
+      ↓
+   IndicTrans2
+      ↓
+   Teacher reviews/edits target text
+      ↓
+   Approve Hindi / Marathi
+      ↓
+4. Background preparation
+      ├── Parler-TTS audio
+      ├── Practice drafts
+      └── Worksheet on demand
+      ↓
+5. Review & Publish
 ```
 
-## IMPORTANT when copying the final ZIP
+### Publication gate
 
-This ZIP **does not contain your model weights or `.venv`**. Copy/replace the code files and leave your existing `apps/api/models/` folder and `apps/api/.venv/` untouched.
+Publishing requires only:
 
-Also keep your existing `apps/api/.env` file. The ZIP contains `.env.example`, not your private local `.env`.
+- lesson title
+- source text
+- every required target translation exists
+- every required target translation is teacher-approved
 
-## Windows first run
+Audio and practice are **not** publish blockers. They keep working against the same lesson version after publication.
 
-### 1. Backend
+## Long-text translation reliability
+
+Earlier builds used a fixed tokenizer input ceiling and could silently truncate a long lesson. FinalV19 changes this:
+
+```text
+Long lesson
+   ↓
+sentence grouping
+   ↓
+token-safe chunks (never silently truncated)
+   ↓
+batch of up to 4 chunks
+   ↓
+IndicTrans2 greedy inference
+   ↓
+reassemble chunks in order
+```
+
+The decoder uses a dynamic output ceiling up to 512 tokens. If a chunk reaches its ceiling without EOS, that chunk is retried with a larger ceiling instead of returning a cut sentence.
+
+## Why classroom translation should now behave more like the live translator
+
+The live translator has always had a short, resident-model path. FinalV19 brings the classroom path closer to that architecture by:
+
+- keeping translation models resident;
+- using greedy decoding (`num_beams=1`) for the interactive path;
+- avoiding SQLite write transactions during transformer inference;
+- batching safe long-text chunks;
+- caching exact repeated translations;
+- showing individual target results as they complete;
+- eliminating unnecessary full lesson re-fetch work after translation.
+
+Actual local inference speed is still determined by the laptop CPU/GPU and the size of the text. No honest local build can guarantee a fixed cloud-service latency for every lecture.
+
+## TTS behavior
+
+After a target translation is approved:
+
+```text
+Approved text
+    ↓
+TTS job QUEUED
+    ↓
+TTS job RUNNING
+    ↓
+WAV artifact READY
+```
+
+Hindi and Marathi TTS jobs use a dedicated background worker. Practice has its own worker, so practice cannot sit in front of the next audio job.
+
+Long TTS text is token-safe chunked before Parler generation so the prompt is not silently truncated.
+
+The generated audio is cached by exact text + language + speaker. Replaying an existing artifact does not regenerate the model output.
+
+## Teacher review when the teacher does not know the target language
+
+The teacher sees source and translated text side by side.
+
+`Meaning Check` is an **on-demand** reverse translation into the teacher's source language. It is intentionally not part of the hot translation path, because another transformer inference would only add waiting to every translation click.
+
+Automated Translation Guard warnings remain visible. Explicit teacher approval remains the publication decision.
+
+## Flashcards
+
+Flashcards were removed from the active product flow in FinalV19. They are no longer generated, displayed, or required.
+
+## Live Translate
+
+The live demo is still separate from classroom publishing:
+
+```text
+Laptop microphone
+      ↓
+VAD / Whisper
+      ↓
+IndicTrans2
+      ↓
+ParlerTTS streaming
+      ↓
+Buds / headphones
+```
+
+Recommended demo devices:
+
+- Input: laptop built-in microphone
+- Output: Buds/headphones
+- Do not use the Buds microphone for the demo unless specifically testing a headset profile.
+
+Live temporary history can replay the same generated audio instead of regenerating it.
+
+## Run on Windows
+
+### Backend
 
 ```powershell
 D:
-cd \git\BhashaSaathi_Local_NoDocker\apps\api
+cd \git\BhashaSaathi_FinalV19\apps\api
 .\.venv\Scripts\activate
-# Keep the already-validated local model environment; do not blindly reinstall it on Python 3.13.
-# If dependencies are missing, use the pinned versions documented in MODEL_INTEGRATION_HANDOFF.md.
-```
-
-Your model folders should already pass:
-
-```powershell
-python ..\..\scripts\check_environment.py
-python ..\..\scripts\verify_models.py
-```
-
-Then reset only the local database once after installing the final code:
-
-```powershell
-python ..\..\scripts\reset_local_db.py
-alembic upgrade head
-python ..\..\scripts\seed_demo.py
-```
-
-### 2. TTS support tokenizer
-
-The verified Parler checkpoint depends on a local FLAN-T5 *description tokenizer*. The main Parler weights are already in your TTS model folder.
-
-Run once if `apps/api/models/tts/flan-t5-large` is not present:
-
-```powershell
-python ..\..\scripts\download_tts_support.py
-```
-
-Then verify it through:
-
-```powershell
-python ..\..\scripts\model_lab.py --skip-tts
-```
-
-This downloads tokenizer/config support only. It does **not** download another large TTS model.
-
-### 3. Start FastAPI
-
-```powershell
 uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Health:
-
-```text
-http://127.0.0.1:8000/api/v1/health
-```
-
-Swagger:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
-### 4. Frontend — second PowerShell
+### Frontend
 
 ```powershell
 D:
-cd \git\BhashaSaathi_Local_NoDocker\apps\web
+cd \git\BhashaSaathi_FinalV19\apps\web
 npm install
+npm run build
 npm run dev
 ```
 
 Open:
 
-```text
-http://localhost:5173
+`http://localhost:5173`
+
+### Verify the local models
+
+```powershell
+cd D:\git\BhashaSaathi_FinalV19
+python scripts\verify_models.py
+python scripts\model_lab.py
 ```
 
-## Demo accounts
+### Translation performance probe
 
-```text
-Teacher
-teacher@bhashasaathi.local
-Demo@1234
-
-Student
-student@bhashasaathi.local
-Demo@1234
+```powershell
+python scripts\perf_probe.py --source hin_Deva --target eng_Latn --text "हमारी कक्षा में पौधों के बारे में सीखते हैं।" --repeat 3
 ```
 
-The demo uses `.local` addresses intentionally. The backend accepts these local-only demo identifiers without requiring public-domain email validation.
+## Important runtime rule
 
-## Recommended SIH demo flow
+Keep the working local model directories and the already-compatible Python environment. Do not blindly reinstall the requirements on Python 3.13; the previous environment had old dependency resolution issues involving Cython.
 
-1. Sign in.
-2. Open **Demo Primary Classroom**.
-3. Create/open **Why Plants Need Water**.
-4. Enter or record Hindi.
-5. Run Whisper and edit the transcript.
-6. Run Understand to get concepts + learning outcome.
-7. Choose any supported target language (for example Marathi) and generate the translation.
-8. Show Translation Guard flags/confidence.
-9. Review/edit and teacher-approve.
-10. Generate practice, worksheet, flashcards and audio.
-11. Publish.
-12. Open **My Learning** and select Marathi, Hindi, or English.
-13. Download the lesson.
-14. Open the lesson and play cached audio.
-15. Disconnect network.
-16. Continue reading/practice offline.
-17. Submit an offline attempt.
-18. Restore network and press **Sync now**.
-
-## AI settings
-
-Use real local AI for the final demo:
+Expected local folders:
 
 ```text
-DEMO_MODE=false
-TRANSLATION_ENABLED=true
-STT_ENABLED=true
-TTS_ENABLED=true
-LLM_ENABLED=false
+apps/api/models/
+  translation/
+    en-indic/
+    indic-en/
+    indic-indic/
+  stt/
+    whisper-small/
+  tts/
+    indic-parler-tts/
+    flan-t5-large/
 ```
 
-No model weights are bundled in Git/ZIP. Your verified local model folders are reused.
+## Verification in this build environment
 
-## Low-resource behavior
+- Python compileall: PASS
+- FastAPI application import: PASS
+- 23 TS/TSX files syntax parsed: PASS
+- long-text token-safe translation chunk test: PASS
+- TTS token-safe prompt chunk test: PASS
+- FinalV19 static audit: 10/10 PASS
+- active API/web flashcard reference scan: PASS
 
-The app loads heavy models lazily. Student offline learning does not require generative AI on the Android/device side. TTS is intended to be generated/cached during lesson preparation and synchronized to learners.
-
-## Testing
-
-Backend syntax/import and clean SQLite migration/seed paths are checked in the build workspace. Frontend source is transpile-validated here. A full `npm install` was not completed in the sandbox because the npm registry was not reachable for dependency installation, so run `npm install` + `npm run build` on your Windows machine before the demo.
-
-The local Windows model directories are **not accessible from this sandbox**, so final model inference must be run on your machine; your `verify_models.py` output already confirms the required model folders are populated.
-
-## Product boundaries
-
-The MVP intentionally does not add social networking, parent portals, leaderboards, blockchain, huge analytics, ERP, dozens of autonomous agents, all Indian languages, foundation-model training, or full generative AI on low-end Android.
-
-## FinalV14 performance/live release notes
-
-This archive is **FinalV14** (13 prior ZIP builds were present in the working build directory).
-
-The major additions are the homepage **Live Translate** tool (English/Hindi/Marathi only), bounded pipelining, warm-model runtime, translation/TTS caches, runtime prewarm, browser 16 kHz capture, streamed Parler-TTS PCM playback, and 24-hour temporary device-local Live Translate history.
-
-See `FINALV14_README.md`, `FINALV14_AUDIT_REPORT.md`, and `VERSION_HISTORY.md` for the exact file map and audit details.
-
-## FinalV15 speed + live audio history
-
-FinalV15 keeps all three validated IndicTrans2 route families resident by default, reduces unnecessary Parler-TTS generation fragmentation, warms TTS in the Lesson Builder in the background, and exposes **Hear audio** for completed turns in temporary Live Translate history. See `FINALV15_README.md` and `FINALV15_SPEED_AUDIT.md`.
+The final browser/Vite production build was not completed inside the build sandbox because npm dependency installation exceeded the available build window. Real local model inference and Windows audio playback must be verified on the demo laptop.

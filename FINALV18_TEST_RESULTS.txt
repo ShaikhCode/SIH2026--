@@ -1,0 +1,11 @@
+BhashaSaathi FinalV18 test summary
+
+PASS  python -m compileall
+PASS  FastAPI import / application version 18.0.0
+PASS  preparation_jobs table exists
+PASS  translation_feedback table exists
+PASS  teacher approval fast-path direct fixture
+PASS  student translation feedback fixture
+PASS  publish gate no longer requires LEARNING_OUTCOME_MISSING
+PASS  FinalV18 static audit: 12/12
+NOTE  Full npm/Vite build was not completed in sandbox because dependency installation did not finish within the available build window.

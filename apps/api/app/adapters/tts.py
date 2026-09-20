@@ -138,7 +138,7 @@ class IndicParlerTTSAdapter:
         )
 
     @staticmethod
-    def _split_prompt_text(text: str, max_chars: int = 240) -> list[str]:
+    def _split_prompt_text(text: str, max_chars: int = 480) -> list[str]:
         import re
         normalized = re.sub(r'\s+', ' ', (text or '').strip())
         if not normalized:
@@ -163,6 +163,59 @@ class IndicParlerTTSAdapter:
                 chunks.append(sentence)
         return chunks or [normalized]
 
+    @staticmethod
+    def _token_count(text: str, tokenizer: Any) -> int:
+        encoded = tokenizer(text, padding=False, truncation=False, return_tensors='pt')
+        return int(encoded.input_ids.shape[1])
+
+    def _token_safe_prompt_chunks(self, text: str, tokenizer: Any, budget: int = 220) -> list[str]:
+        """Split long TTS prompts before tokenizer truncation can occur."""
+        import re
+        normalized = re.sub(r'\s+', ' ', (text or '').strip())
+        if not normalized:
+            return []
+        try:
+            if self._token_count(normalized, tokenizer) <= budget:
+                return [normalized]
+        except Exception:
+            return self._split_prompt_text(normalized, max_chars=480)
+
+        sentences = re.split(r'(?<=[.!?।॥])\s+', normalized)
+        chunks: list[str] = []
+        current = ''
+        for sentence in (part.strip() for part in sentences):
+            if not sentence:
+                continue
+            candidate = sentence if not current else f'{current} {sentence}'
+            try:
+                count = self._token_count(candidate, tokenizer)
+            except Exception:
+                count = budget + 1
+            if count <= budget:
+                current = candidate
+                continue
+            if current:
+                chunks.append(current)
+                current = ''
+            words = sentence.split()
+            word_chunk: list[str] = []
+            for word in words:
+                candidate = ' '.join(word_chunk + [word])
+                try:
+                    count = self._token_count(candidate, tokenizer)
+                except Exception:
+                    count = budget + 1
+                if word_chunk and count > budget:
+                    chunks.append(' '.join(word_chunk).strip())
+                    word_chunk = [word]
+                else:
+                    word_chunk.append(word)
+            if word_chunk:
+                chunks.append(' '.join(word_chunk).strip())
+        if current:
+            chunks.append(current)
+        return [item for item in chunks if item]
+
     def _description_inputs(self, language: str, speaker: str, device: torch.device, tokenizer: Any):
         cache_key = (language, speaker or 'classroom_teacher')
         with self._lock:
@@ -183,7 +236,9 @@ class IndicParlerTTSAdapter:
     def _generate_waveform(self, text: str, language: str, speaker: str) -> tuple[np.ndarray, int]:
         model, tokenizer, description_tokenizer, feature, device = self._load()
         description_ids, description_mask = self._description_inputs(language, speaker, device, description_tokenizer)
-        chunks = self._split_prompt_text(text, max_chars=240)
+        # Token-safe chunks prevent silent prompt truncation on long classroom
+        # lessons while still grouping sentences to avoid excessive Parler calls.
+        chunks = self._token_safe_prompt_chunks(text, tokenizer, budget=220)
         audio_chunks: list[np.ndarray] = []
         sampling_rate = int(feature.sampling_rate)
         with torch.inference_mode():
@@ -191,8 +246,7 @@ class IndicParlerTTSAdapter:
                 prompt_inputs = tokenizer(
                     chunk,
                     return_tensors='pt',
-                    truncation=True,
-                    max_length=256,
+                    truncation=False,
                 ).to(device)
                 generation = model.generate(
                     input_ids=description_ids,
@@ -236,7 +290,7 @@ class IndicParlerTTSAdapter:
         speaker: str = 'classroom_teacher',
         *,
         stop_event: threading.Event | None = None,
-        stream_seconds: float = 1.0,
+        stream_seconds: float = 0.5,
         timeout: float = 15.0,
     ):
         """Yield native Parler audio chunks as soon as the streamer produces them.
@@ -266,7 +320,7 @@ class IndicParlerTTSAdapter:
 
             description_ids, description_mask = self._description_inputs(language, speaker, device, description_tokenizer)
             words = text.split()
-            prompt_text = ' '.join(words[:256])
+            prompt_text = ' '.join(words[:256]).strip()
             prompt_inputs = tokenizer(
                 prompt_text,
                 return_tensors='pt',

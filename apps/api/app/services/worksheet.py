@@ -7,8 +7,6 @@ def _translation_map(translations):
 
 def make_worksheet(lesson, version, translations=None, language_a=None, language_b=None):
     concepts = json.loads(version.concepts_json or '[]')
-    outcome_list = json.loads(version.learning_objectives_json or '[]')
-    outcome = outcome_list[0] if outcome_list else ''
     texts = _translation_map(translations)
     source = version.clean_transcript or version.source_text
     language_a = language_a or lesson.source_language
@@ -28,7 +26,7 @@ def make_worksheet(lesson, version, translations=None, language_a=None, language
     .grid{{display:grid;grid-template-columns:1fr 1fr;gap:16px}}.label{{font-weight:700;color:#0b6759;margin-bottom:6px}}
     li{{margin:8px 0}}.line{{border-bottom:1px solid #b9c5c1;height:28px;margin:4px 0}}
     @media print{{body{{margin:10mm auto}}.box{{break-inside:avoid}}}}</style></head><body>
-    <h1>{title}</h1><p><strong>Learning outcome:</strong> {html.escape(outcome)}</p>
+    <h1>{title}</h1>
     <div class="box"><h2>Vocabulary / शब्दावली</h2><ul>{vocab}</ul></div>
     <div class="box"><h2>Read & understand</h2><div class="grid">
       <div><div class="label">{html.escape(language_a)}</div><p>{html.escape(source)}</p></div>
@@ -42,29 +40,9 @@ def make_worksheet(lesson, version, translations=None, language_a=None, language
     </body></html>'''
     return {
         'title': lesson.title,
-        'learning_outcome': outcome,
+        'learning_outcome': '',
         'concepts': concepts,
         'language_a': language_a,
         'language_b': language_b,
         'html': body,
     }
-
-
-def make_flashcards(lesson, version, translations=None, languages=('hin_Deva', 'eng_Latn', 'mar_Deva')):
-    concepts = json.loads(version.concepts_json or '[]')
-    texts = _translation_map(translations)
-    return [
-        {
-            'concept_id': c.get('concept_id'),
-            'front': c.get('label'),
-            'definition': c.get('definition') or f'Key idea from {lesson.title}: {c.get("label")}.',
-            'example': c.get('source_span') or c.get('label'),
-            'language_labels': {
-                'hin_Deva': c.get('label') if 'hin_Deva' in languages else None,
-                'eng_Latn': c.get('label') if 'eng_Latn' in languages else None,
-                'mar_Deva': texts.get('mar_Deva') if 'mar_Deva' in languages else None,
-            },
-            'languages': list(languages),
-        }
-        for c in concepts[:8]
-    ]

@@ -1,81 +1,8 @@
-BHASASAATHI FINAL RESULT — COPY INSTRUCTIONS
+FINALV19 COPY NOTES
+====================
 
-KEEP THESE FROM YOUR CURRENT INSTALLATION
-  apps\api\.venv\
-  apps\api\models\
-  apps\api\.env
-
-REPLACE THE CODE
-  Copy the contents of this ZIP over:
-  D:\git\BhashaSaathi_Local_NoDocker
-
-Do NOT rename or move model files.
-Do NOT delete your .venv.
-Do NOT overwrite your private .env.
-
-FIRST RUN — BACKEND
-
-D:
-cd \git\BhashaSaathi_Local_NoDocker\apps\api
-.\.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-cd ..\..
-python scripts\check_environment.py
-python scripts\verify_models.py
-
-The 18 Sep 2026 diagnostic handoff proved real IndicTrans2 EN->Hindi and Hindi->EN inference and real faster-whisper checkpoint loading. It also proved the Whisper checkpoint is a CTranslate2/faster-whisper model and must not be renamed into a Transformers checkpoint. The current remaining TTS support dependency is the local FLAN-T5 description tokenizer.
-
-TTS SUPPORT (ONE TIME)
-
-From repository root:
-  python scripts\download_tts_support.py
-
-This downloads only tokenizer/config assets for google/flan-t5-large. It does NOT download full FLAN-T5 model weights.
-
-MODEL LAB — RUN BEFORE OPENING THE UI
-
-  python scripts\model_lab.py --skip-tts
-
-After TTS support is installed:
-  python scripts\model_lab.py
-
-For a real Hindi recording:
-  python scripts\model_lab.py --audio path\to\hindi_recording.wav --stt-language hin_Deva --skip-tts
-
-DATABASE
-
-  cd apps\api
-  python ..\..\scripts\reset_local_db.py
-  alembic upgrade head
-  python ..\..\scripts\seed_demo.py
-  python ..\..\scripts\run_smoke_test.py
-
-START API
-
-  uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-
-START WEB — SECOND POWERSHELL
-
-  D:
-  cd \git\BhashaSaathi_Local_NoDocker\apps\web
-  npm install
-  npm run build
-  npm run dev
-
-OPEN
-  http://localhost:5173
-
-DEMO ACCOUNTS
-  Teacher: teacher@bhashasaathi.local / Demo@1234
-  Student: student@bhashasaathi.local / Demo@1234
-
-FINAL PRODUCT FLOW
-  Login -> Classroom -> Lesson -> Source/STT -> Understand -> Concepts ->
-  English + Marathi -> Translation Guard -> Teacher approval ->
-  Marathi practice approval -> Worksheet -> Flashcards -> Marathi TTS ->
-  Publish -> Student -> Marathi -> Read/Listen/Practice -> Download ->
-  Offline -> Answer -> Sync
-
-PUBLISH IS INTENTIONALLY BLOCKED UNTIL THE REQUIRED PACKAGE IS COMPLETE.
+1. Keep your existing local model folders; the ZIP intentionally does not ship model weights.
+2. Keep or recreate apps/api/.venv using the already-working local dependency set. Do not blindly rerun an unconstrained requirements install on Python 3.13.
+3. Start FastAPI on 127.0.0.1:8000 and the Vite app on 5173.
+4. Verify translation with scripts\model_lab.py before a classroom demo.
+5. The new publish rule allows publication after both required target translations are teacher-approved; audio and practice continue in the background.

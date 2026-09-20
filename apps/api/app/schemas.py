@@ -53,6 +53,10 @@ class VersionCreateIn(BaseModel):
 
 class TranslateIn(BaseModel):
     target_language: LanguageCode
+    source_text: str | None = Field(default=None, max_length=20000)
+    clean_transcript: str | None = Field(default=None, max_length=20000)
+    source_language: LanguageCode | None = None
+    force: bool = False
 
 
 class VerifyIn(BaseModel):
@@ -80,6 +84,11 @@ class AttemptIn(BaseModel):
     offline_created_at: str | None = None
 
 
+class TranslationFeedbackIn(BaseModel):
+    status: Literal['CONFIRMED', 'REPORTED']
+    comment: str = Field(default='', max_length=1000)
+
+
 class SyncPushIn(BaseModel):
     device_id: str = Field(min_length=3, max_length=120)
     operations: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
@@ -89,9 +98,6 @@ class TTSIn(BaseModel):
     target_language: LanguageCode = 'mar_Deva'
     speaker: str = Field(default='classroom_teacher', min_length=1, max_length=100)
 
-
-class FlashcardIn(BaseModel):
-    language: LanguageCode = 'hin_Deva'
 
 
 class LiveWarmIn(BaseModel):

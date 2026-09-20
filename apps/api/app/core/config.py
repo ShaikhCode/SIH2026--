@@ -29,13 +29,20 @@ class Settings(BaseSettings):
     max_live_segment_ms: int = 2200
     live_end_silence_ms: int = 280
     live_queue_size: int = 2
-    live_translation_beams: int = 2
-    translation_route_cache_limit: int = 3
-    live_tts_stream_seconds: float = 1.0
+    live_translation_beams: int = 1
+    translation_route_cache_limit: int = 2
+    live_tts_stream_seconds: float = 0.5
     live_tts_stream_timeout: float = 15.0
-    text_translation_beams: int = 3
+    text_translation_beams: int = 1
     parler_description_tokenizer: str = ''
     live_history_ttl_hours: int = 24
+    torch_threads: int = 0
+    translation_max_new_tokens: int = 512
+    live_translation_max_new_tokens: int = 96
+    translation_inference_lock: bool = True
+    translation_input_token_budget: int = 220
+    translation_batch_size: int = 4
+    defer_tts_warmup_until_approval: bool = True
 
     model_config = SettingsConfigDict(
         env_file='.env',

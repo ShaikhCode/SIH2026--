@@ -71,6 +71,8 @@ export interface Translation {
   verification_status: string;
   teacher_edited: boolean;
   native_review_status: string;
+  student_feedback?: { confirmed: number; reported: number };
+  my_student_feedback?: 'CONFIRMED' | 'REPORTED' | null;
 }
 
 export interface Practice {
@@ -112,12 +114,12 @@ export interface LessonPack {
   lesson: LessonSummary;
   worksheet_html?: string;
   worksheet_meta?: Record<string, unknown>;
-  flashcards?: Array<Record<string, unknown>>;
   version: LessonVersion;
   translations: Translation[];
   artifacts: Artifact[];
   practice: Practice[];
   practice_all?: Practice[];
+  preparations?: Array<{ id: number; kind: string; language: Lang; status: 'QUEUED' | 'RUNNING' | 'READY' | 'FAILED'; error?: string | null; created_at?: string | null; started_at?: string | null; finished_at?: string | null }>;
 }
 
 export interface VersionSummary {

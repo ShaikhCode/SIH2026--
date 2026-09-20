@@ -2,20 +2,19 @@ import hashlib
 import json
 import logging
 import secrets
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-from ...adapters.translation import IndicTrans2Adapter
 from ...core.config import STORAGE_ROOT, settings
 from ...core.security import current_user
 from ...db import get_db
 from ...layer2.service import Layer2Engine
-from ...models import Artifact, Group, Lesson, LessonVersion, Membership, PracticeQuestion, Translation
+from ...models import Artifact, Group, Lesson, LessonVersion, Membership, PracticeQuestion, Translation, TranslationFeedback, PreparationJob
 from ...schemas import (
-    FlashcardIn,
     LessonCreateIn,
     LessonPatchIn,
     PracticeApprovalIn,
@@ -26,10 +25,13 @@ from ...schemas import (
     VersionCreateIn,
 )
 from ...services.artifacts import register_file, sha256_file
-from ...services.content import analyze_source, ensure_practice
+from ...services.content import analyze_source, ensure_practice, concepts_as_json
 from ...services.model_manager import manager
 from ...services.publish import publish
-from ...services.worksheet import make_flashcards, make_worksheet
+from ...services.worksheet import make_worksheet
+from ...services.background_prep import enqueue_translation_approved, enqueue_retry, preparation_views
+from ...layer2.concepts import extract_concepts
+from ...layer2.normalizer import normalize_text
 
 router = APIRouter(tags=['lessons'])
 logger = logging.getLogger('bhashasaathi.lessons')
@@ -113,14 +115,27 @@ def _practice_view(question: PracticeQuestion) -> dict:
     }
 
 
-def pack(db: Session, lesson: Lesson, *, include_pending: bool = False) -> dict:
+def pack(db: Session, lesson: Lesson, *, include_pending: bool = False, viewer_id: int | None = None, include_worksheet: bool = False) -> dict:
     version = current_version(db, lesson)
     translations = db.query(Translation).filter_by(lesson_version_id=version.id).order_by(Translation.target_language).all()
     artifacts = db.query(Artifact).filter_by(lesson_version_id=version.id).order_by(Artifact.id.desc()).all()
     all_questions = db.query(PracticeQuestion).filter_by(lesson_version_id=version.id).order_by(PracticeQuestion.id.asc()).all()
     visible_questions = all_questions if include_pending else [q for q in all_questions if q.approved]
-    worksheet = make_worksheet(lesson, version, translations)
-    flashcards = make_flashcards(lesson, version, translations)
+
+    worksheet = make_worksheet(lesson, version, translations) if include_worksheet else None
+
+    feedback_rows = db.query(TranslationFeedback).filter_by(lesson_version_id=version.id).all()
+    feedback_counts: dict[int, dict[str, int]] = {}
+    viewer_feedback: dict[int, str] = {}
+    for feedback in feedback_rows:
+        item = feedback_counts.setdefault(feedback.translation_id, {'confirmed': 0, 'reported': 0})
+        if feedback.status == 'CONFIRMED':
+            item['confirmed'] += 1
+        elif feedback.status == 'REPORTED':
+            item['reported'] += 1
+        if viewer_id is not None and feedback.student_id == viewer_id:
+            viewer_feedback[feedback.translation_id] = feedback.status
+
     translations_view = [
         {
             'id': item.id,
@@ -132,15 +147,16 @@ def pack(db: Session, lesson: Lesson, *, include_pending: bool = False) -> dict:
             'verification_status': item.verification_status,
             'teacher_edited': item.teacher_edited,
             'native_review_status': item.native_review_status,
+            'student_feedback': feedback_counts.get(item.id, {'confirmed': 0, 'reported': 0}),
+            'my_student_feedback': viewer_feedback.get(item.id),
         }
         for item in translations
     ]
     return {
         'lesson': lesson_summary(db, lesson),
         'version': version_view(version),
-        'worksheet_html': worksheet['html'],
-        'worksheet_meta': {k: worksheet[k] for k in ('learning_outcome', 'concepts', 'language_a', 'language_b')},
-        'flashcards': flashcards,
+        'worksheet_html': worksheet['html'] if worksheet else '',
+        'worksheet_meta': ({k: worksheet[k] for k in ('learning_outcome', 'concepts', 'language_a', 'language_b')} if worksheet else {}),
         'translations': translations_view,
         'artifacts': [
             {
@@ -156,8 +172,8 @@ def pack(db: Session, lesson: Lesson, *, include_pending: bool = False) -> dict:
         ],
         'practice': [_practice_view(q) for q in visible_questions if q.approved],
         'practice_all': [_practice_view(q) for q in all_questions] if include_pending else [],
+        'preparations': preparation_views(db, version.id),
     }
-
 
 def concept_rows(values: list[str]) -> list[dict]:
     result = []
@@ -223,12 +239,15 @@ def list_lessons(group_id: int, db: Session = Depends(get_db), user=Depends(curr
 
 
 @router.get('/lessons/{lesson_id}')
-def get_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+def get_lesson(lesson_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     if not can_read_lesson(db, lesson, user):
         raise HTTPException(403, detail={'code': 'LESSON_ACCESS_DENIED', 'message': 'This lesson is not available to your account.'})
     include_pending = bool(db.query(Group).filter_by(id=lesson.group_id, owner_id=user.id).first())
-    return pack(db, lesson, include_pending=include_pending)
+    payload = pack(db, lesson, include_pending=include_pending, viewer_id=user.id)
+    required = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva') if lang != lesson.source_language]
+    background_tasks.add_task(manager.warm_translation_routes, lesson.source_language, required)
+    return payload
 
 
 @router.patch('/lessons/{lesson_id}')
@@ -372,6 +391,20 @@ def rollback(lesson_id: int, version_id: int, db: Session = Depends(get_db), use
     return pack(db, lesson, include_pending=True)
 
 
+@router.post('/lessons/{lesson_id}/prepare-concepts')
+def prepare_concepts(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    source = normalize_text(version.clean_transcript or version.source_text)
+    if not source:
+        raise HTTPException(400, detail={'code': 'SOURCE_REQUIRED', 'message': 'Add lesson text before preparing concepts.'})
+    concepts = extract_concepts(source)
+    version.concepts_json = concepts_as_json(concepts)
+    db.commit()
+    return {'concepts': [c.__dict__ for c in concepts]}
+
+
 @router.post('/lessons/{lesson_id}/analyze')
 def analyze(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
@@ -391,26 +424,92 @@ def analyze(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_
     return result
 
 
+def _apply_fast_translate_input(db: Session, lesson: Lesson, version: LessonVersion, x: TranslateIn) -> bool:
+    """Apply source edits in the same request as translation.
+
+    This removes the old UI round-trip: autosave/patch -> translate. If the source
+    actually changed, generated downstream content is invalidated exactly once.
+    """
+    source_changed = False
+    if x.source_language is not None and x.source_language != lesson.source_language:
+        lesson.source_language = x.source_language
+        source_changed = True
+    if x.source_text is not None and x.source_text != version.source_text:
+        version.source_text = x.source_text
+        source_changed = True
+    if x.clean_transcript is not None and x.clean_transcript != version.clean_transcript:
+        version.clean_transcript = x.clean_transcript
+        source_changed = True
+    if source_changed:
+        db.query(Translation).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(Artifact).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(PracticeQuestion).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(PreparationJob).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        db.query(TranslationFeedback).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        lesson.status = 'DRAFT'
+    return source_changed
+
+
+def _translation_payload(row: Translation, *, translation_ms: float, total_ms: float, source_changed: bool = False) -> dict:
+    return {
+        'translation_id': row.id,
+        'text': row.translated_text,
+        'confidence': row.confidence,
+        'flags': json.loads(row.flags_json or '[]'),
+        'validation': json.loads(row.validation_json or '{}'),
+        'verification_status': row.verification_status,
+        'native_review_status': row.native_review_status,
+        'translation_ms': round(translation_ms),
+        'total_ms': round(total_ms),
+        'source_changed': source_changed,
+    }
+
+
 @router.post('/lessons/{lesson_id}/translate')
 def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), user=Depends(current_user)):
+    request_started = time.perf_counter()
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
-    if x.target_language == lesson.source_language:
-        raise HTTPException(400, detail={'code': 'SAME_LANGUAGE', 'message': 'Choose a language different from the source language.'})
     if not settings.translation_enabled:
         raise HTTPException(503, detail={'code': 'TRANSLATION_DISABLED', 'message': 'Translation is disabled in this local profile.'})
+
+    source_changed = _apply_fast_translate_input(db, lesson, version, x)
+    # Never hold a SQLite write transaction open while a transformer is running.
+    # The old path flushed the edit and then kept the write transaction alive for
+    # model inference, which made concurrent target-language requests wait on the
+    # database before they even reached IndicTrans2.
+    if source_changed:
+        db.commit()
+        version = current_version(db, lesson)
+
     source = (version.clean_transcript or version.source_text).strip()
     if not source:
         raise HTTPException(400, detail={'code': 'SOURCE_REQUIRED', 'message': 'Add lesson text before translation.'})
-    engine = Layer2Engine(manager.translate)
+    if x.target_language == lesson.source_language:
+        raise HTTPException(400, detail={'code': 'SAME_LANGUAGE', 'message': 'Choose a language different from the source language.'})
+
     concepts = json.loads(version.concepts_json or '[]')
     context = {'concepts': concepts, 'grade': lesson.grade, 'subject': lesson.subject, 'topic': lesson.topic}
+
+    # Database-level cache: once a translation exists for this exact lesson
+    # version, do not rerun the model unless the caller explicitly asks for force.
+    # This makes repeated language clicks instant even after process restarts.
+    cached_row = db.query(Translation).filter_by(lesson_version_id=version.id, target_language=x.target_language).first()
+    if cached_row is not None and cached_row.translated_text.strip() and not x.force:
+        return _translation_payload(cached_row, translation_ms=0.0, total_ms=(time.perf_counter() - request_started) * 1000.0, source_changed=source_changed)
+
     try:
-        text = engine.translate_text(source, lesson.source_language, x.target_language, context)
+        model_started = time.perf_counter()
+        # Fast interactive mode: greedy decoding + bounded output length. The
+        # Translation Guard remains enabled immediately after inference.
+        text = manager.translate(source, lesson.source_language, x.target_language, fast=True).strip()
+        translation_ms = (time.perf_counter() - model_started) * 1000.0
+        engine = Layer2Engine(lambda value, src, tgt: text)
         validation = engine.validate_translation(source, text, lesson.source_language, x.target_language, context)
     except Exception as exc:
         logger.exception('Local IndicTrans2 translation failed lesson_id=%s src=%s tgt=%s', lesson_id, lesson.source_language, x.target_language)
+        db.rollback()
         raise HTTPException(
             503,
             detail={
@@ -422,6 +521,7 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
         ) from exc
 
     row = db.query(Translation).filter_by(lesson_version_id=version.id, target_language=x.target_language).first()
+    previous_text = row.translated_text if row else ''
     if not row:
         row = Translation(
             lesson_version_id=version.id,
@@ -430,6 +530,9 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
             translated_text=text,
         )
         db.add(row)
+    if previous_text.strip() != text.strip():
+        db.query(Artifact).filter_by(lesson_version_id=version.id, type='audio', language=x.target_language).delete(synchronize_session=False)
+    row.source_language = lesson.source_language
     row.translated_text = text
     row.confidence = validation['confidence']
     row.flags_json = json.dumps(validation['flags'], ensure_ascii=False)
@@ -440,19 +543,13 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
     lesson.status = 'FLAGGED' if validation['flags'] else 'TRANSLATED'
     db.commit()
     db.refresh(row)
-    return {
-        'translation_id': row.id,
-        'text': row.translated_text,
-        'confidence': row.confidence,
-        'flags': json.loads(row.flags_json),
-        'validation': validation,
-        'verification_status': row.verification_status,
-        'native_review_status': row.native_review_status,
-    }
+    return _translation_payload(row, translation_ms=translation_ms, total_ms=(time.perf_counter() - request_started) * 1000.0, source_changed=source_changed)
 
 
 @router.post('/lessons/{lesson_id}/verify-translation')
-def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db), user=Depends(current_user)):
+def verify_translation(lesson_id: int, x: VerifyIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
+    """Approve only the text. Everything downstream is prepared asynchronously."""
+    started = time.perf_counter()
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
@@ -460,11 +557,14 @@ def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db
     if not translation or translation.lesson_version_id != version.id:
         raise HTTPException(404, detail={'code': 'TRANSLATION_NOT_FOUND', 'message': 'Translation not found.'})
     if x.native_review_status == 'VERIFIED':
-        raise HTTPException(400, detail={'code': 'NATIVE_REVIEW_REQUIRES_REVIEWER', 'message': 'Native-language verification is reserved for a qualified language reviewer. Teacher approval can remain separate.'})
+        raise HTTPException(400, detail={'code': 'NATIVE_REVIEW_REQUIRES_REVIEWER', 'message': 'Native-language verification is reserved for a qualified language reviewer.'})
     if x.edited_text is not None:
         text = x.edited_text.strip()
         if not text:
             raise HTTPException(400, detail={'code': 'TRANSLATION_EMPTY', 'message': 'Approved translation cannot be empty.'})
+        changed_text = translation.translated_text.strip() != text
+        if changed_text:
+            db.query(Artifact).filter_by(lesson_version_id=version.id, type='audio', language=translation.target_language).delete(synchronize_session=False)
         translation.translated_text = text
         translation.teacher_edited = True
         engine = Layer2Engine(manager.translate)
@@ -484,7 +584,70 @@ def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db
     translation.verification_status = 'TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'
     lesson.status = 'TEACHER_APPROVED' if x.approved else 'FLAGGED'
     db.commit()
-    return pack(db, lesson, include_pending=True)
+    if x.approved:
+        # The HTTP response is deliberately tiny and fast. Audio/practice are
+        # queued only after the approved text is safely committed.
+        background_tasks.add_task(enqueue_translation_approved, lesson.id, version.id, translation.target_language)
+    return {
+        'translation_id': translation.id,
+        'language': translation.target_language,
+        'text': translation.translated_text,
+        'verification_status': translation.verification_status,
+        'native_review_status': translation.native_review_status,
+        'prep_queued': bool(x.approved),
+        'response_ms': round((time.perf_counter() - started) * 1000),
+    }
+
+
+@router.post('/lessons/{lesson_id}/translation/{translation_id}/back-translate')
+def back_translate(lesson_id: int, translation_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+    """On-demand semantic review for a teacher who does not know the target language."""
+    started = time.perf_counter()
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    translation = db.get(Translation, translation_id)
+    if not translation or translation.lesson_version_id != version.id:
+        raise HTTPException(404, detail={'code': 'TRANSLATION_NOT_FOUND', 'message': 'Translation not found.'})
+    source = (version.clean_transcript or version.source_text).strip()
+    if not source or not translation.translated_text.strip():
+        raise HTTPException(400, detail={'code': 'BACK_TRANSLATION_SOURCE_MISSING', 'message': 'Source and target text are required.'})
+    context = json.loads(translation.validation_json or '{}')
+    cached = context.get('back_translation')
+    if isinstance(cached, str) and cached.strip():
+        return {'translation_id': translation.id, 'back_translation': cached, 'cached': True, 'back_translation_ms': 0}
+    model_started = time.perf_counter()
+    try:
+        reverse = manager.translate(translation.translated_text, translation.target_language, translation.source_language, fast=True).strip()
+    except Exception as exc:
+        logger.exception('Back-translation failed lesson_id=%s translation_id=%s', lesson_id, translation_id)
+        raise HTTPException(503, detail={'code': 'BACK_TRANSLATION_FAILED', 'message': 'Meaning check could not be prepared right now.', 'retryable': True, 'details': {'runtime_error': str(exc)[:500]}}) from exc
+    context['back_translation'] = reverse
+    context['back_translation_ms'] = round((time.perf_counter() - model_started) * 1000)
+    translation.validation_json = json.dumps(context, ensure_ascii=False)
+    db.commit()
+    return {'translation_id': translation.id, 'back_translation': reverse, 'cached': False, 'back_translation_ms': round((time.perf_counter() - model_started) * 1000), 'total_ms': round((time.perf_counter() - started) * 1000)}
+
+
+@router.get('/lessons/{lesson_id}/preparations')
+def preparation_status(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    return preparation_views(db, version.id)
+
+
+@router.post('/lessons/{lesson_id}/preparations/{job_id}/retry')
+def retry_preparation(lesson_id: int, job_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    from ...models import PreparationJob
+    job = db.get(PreparationJob, job_id)
+    if not job or job.lesson_version_id != version.id:
+        raise HTTPException(404, detail={'code': 'PREPARATION_NOT_FOUND', 'message': 'Preparation job not found.'})
+    new_id = enqueue_retry(version.id, job.kind, job.language)
+    return {'job_id': new_id, 'status': 'QUEUED', 'kind': job.kind, 'language': job.language}
 
 
 @router.post('/lessons/{lesson_id}/generate-practice')
@@ -519,15 +682,6 @@ def generate_worksheet(lesson_id: int, db: Session = Depends(get_db), user=Depen
     version = current_version(db, lesson)
     translations = db.query(Translation).filter_by(lesson_version_id=version.id).all()
     return make_worksheet(lesson, version, translations)
-
-
-@router.post('/lessons/{lesson_id}/generate-flashcards')
-def generate_flashcards(lesson_id: int, x: FlashcardIn, db: Session = Depends(get_db), user=Depends(current_user)):
-    lesson = db_lesson(db, lesson_id)
-    require_group_owner(db, lesson, user)
-    version = current_version(db, lesson)
-    translations = db.query(Translation).filter_by(lesson_version_id=version.id).all()
-    return make_flashcards(lesson, version, translations, (x.language, 'eng_Latn', 'mar_Deva'))
 
 
 @router.post('/lessons/{lesson_id}/transcribe')
@@ -583,6 +737,7 @@ def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(cu
     key = hashlib.sha256((text + '|' + x.target_language + '|' + x.speaker + '|v2').encode('utf-8')).hexdigest()
     path = cache / f'{key}.wav'
     created = False
+    tts_started = time.perf_counter()
     if not path.exists():
         try:
             manager.synthesize(text, path, x.target_language, x.speaker)
@@ -594,7 +749,22 @@ def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(cu
     artifact = db.query(Artifact).filter_by(lesson_version_id=version.id, type='audio', language=x.target_language, sha256=digest).first()
     if not artifact:
         artifact = register_file(db, version.id, 'audio', x.target_language, path, 'audio/wav', {'cache_key': key, 'speaker': x.speaker})
-    return {'artifact_id': artifact.id, 'url': f'/api/v1/artifacts/{artifact.id}', 'language': x.target_language, 'cached': not created}
+    return {
+        'artifact_id': artifact.id,
+        'url': f'/api/v1/artifacts/{artifact.id}',
+        'language': x.target_language,
+        'cached': not created,
+        'tts_ms': round((time.perf_counter() - tts_started) * 1000.0),
+        'artifact': {
+            'id': artifact.id,
+            'type': artifact.type,
+            'language': artifact.language,
+            'mime_type': artifact.mime_type,
+            'size_bytes': artifact.size_bytes,
+            'sha256': artifact.sha256,
+            'url': f'/api/v1/artifacts/{artifact.id}',
+        },
+    }
 
 
 @router.post('/lessons/{lesson_id}/publish')
