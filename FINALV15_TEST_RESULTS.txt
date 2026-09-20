@@ -1,0 +1,11 @@
+BhashaSaathi FinalV15 — Focused Test Results
+
+PASS  Python compileall: apps/api/app + scripts
+PASS  Translation route cache setting exists and defaults to 3
+PASS  TTS sentence/character chunking + description-token cache present
+PASS  Lesson Builder background TTS warm-up hooks present
+PASS  Live temporary-history "Hear audio" control present
+SKIP Frontend production build in sandbox: node_modules not installed and registry access was unavailable
+SKIP Real local model inference in sandbox: user's Windows model weights are not bundled in the source archive
+
+Performance claims are architectural, not a fixed millisecond guarantee.

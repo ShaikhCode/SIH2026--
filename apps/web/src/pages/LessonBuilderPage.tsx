@@ -107,6 +107,13 @@ export default function LessonBuilderPage() {
   }, [sourceLanguage, target]);
 
   useEffect(() => {
+    if (!hydrated.current) return;
+    // Warm TTS while the teacher is doing other lesson work. This is intentionally
+    // non-blocking; opening the builder must stay responsive.
+    void api.warmTTS().catch(() => undefined);
+  }, [lessonId]);
+
+  useEffect(() => {
     if (step !== 4) return;
     void api.warmTTS().catch(() => {
       // The audio action will surface the real runtime error if warm-up fails.
@@ -168,6 +175,9 @@ export default function LessonBuilderPage() {
       return;
     }
     await api.translate(lessonId, language);
+    // Translation is ready; warm the resident TTS model in the background so
+    // the later audio button does not pay the model-load cost.
+    void api.warmTTS().catch(() => undefined);
     await refresh();
     setTarget(language);
     push(`${label(language)} translation is ready for teacher review.`);
@@ -187,6 +197,7 @@ export default function LessonBuilderPage() {
         failures.push(err);
       }
     }
+    void api.warmTTS().catch(() => undefined);
     await refresh();
     if (failures.length) throw failures[0];
     push('All required target translations are ready for review.');

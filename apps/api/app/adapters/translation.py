@@ -25,6 +25,7 @@ class IndicTrans2Adapter:
         cpu_only: bool = False,
         max_chars: int = 12000,
         text_beams: int = 3,
+        route_cache_limit: int = 3,
     ) -> None:
         self.model_root = Path(model_root)
         self.cpu_only = cpu_only
@@ -36,7 +37,10 @@ class IndicTrans2Adapter:
         self._registry_lock = threading.RLock()
         self._cache: OrderedDict[tuple[str, str, str, int], str] = OrderedDict()
         self._cache_limit = 256
-        self._route_limit = 2
+        # Keep all three validated demo routes resident: en↔Indic and Indic↔Indic.
+        # Evicting one route caused a full model reload when the user switched
+        # repeatedly between English, Hindi and Marathi in the lesson builder.
+        self._route_limit = max(1, min(int(route_cache_limit), 3))
         self._route_order: OrderedDict[str, None] = OrderedDict()
 
     @staticmethod

@@ -215,3 +215,7 @@ This archive is **FinalV14** (13 prior ZIP builds were present in the working bu
 The major additions are the homepage **Live Translate** tool (English/Hindi/Marathi only), bounded pipelining, warm-model runtime, translation/TTS caches, runtime prewarm, browser 16 kHz capture, streamed Parler-TTS PCM playback, and 24-hour temporary device-local Live Translate history.
 
 See `FINALV14_README.md`, `FINALV14_AUDIT_REPORT.md`, and `VERSION_HISTORY.md` for the exact file map and audit details.
+
+## FinalV15 speed + live audio history
+
+FinalV15 keeps all three validated IndicTrans2 route families resident by default, reduces unnecessary Parler-TTS generation fragmentation, warms TTS in the Lesson Builder in the background, and exposes **Hear audio** for completed turns in temporary Live Translate history. See `FINALV15_README.md` and `FINALV15_SPEED_AUDIT.md`.

@@ -59,3 +59,11 @@ The working directory contained 13 prior BhashaSaathi ZIP builds. This release i
 ## Verification notes
 
 The build workspace can syntax-check the Python code and exercise the FastAPI public health/live-language contract. The sandbox does not contain the user's Windows model weights and did not complete a registry-backed `npm install`, so the final browser build and real local model inference must still be run in the user's Windows project environment.
+
+## FinalV15 — speed + live-history audio
+- Fixed translation route eviction: all three validated demo routes can remain resident, avoiding repeated model reloads when switching English/Hindi/Marathi.
+- TTS generation now uses sentence/character-sized prompt chunks instead of fixed 18-word chunks, reducing unnecessary generation passes for normal lesson text.
+- TTS caches tokenized voice descriptions and uses bounded prompt tokenization.
+- Lesson Builder warms the TTS model in the background after translation work and on builder entry; warm-up never blocks the UI.
+- Live temporary history explicitly exposes a **Hear audio** action for completed turns and reports when an audio blob was not captured.
+- Classroom translation validation remains in place; no educational verification was removed.

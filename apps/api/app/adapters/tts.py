@@ -43,6 +43,7 @@ class IndicParlerTTSAdapter:
         self._inference_lock = threading.RLock()
         self._audio_cache: OrderedDict[tuple[str, str, str], tuple[bytes, int, float]] = OrderedDict()
         self._audio_cache_limit = 32
+        self._description_cache: dict[tuple[str, str], tuple[Any, Any]] = {}
 
     def _resolve_description_path(self, configured: str) -> Path:
         candidates: list[Path] = []
@@ -136,21 +137,66 @@ class IndicParlerTTSAdapter:
             'with a neutral classroom-teaching tone. The recording is high quality, clear and close, with no background noise.'
         )
 
+    @staticmethod
+    def _split_prompt_text(text: str, max_chars: int = 240) -> list[str]:
+        import re
+        normalized = re.sub(r'\s+', ' ', (text or '').strip())
+        if not normalized:
+            return []
+        if len(normalized) <= max_chars:
+            return [normalized]
+        sentences = re.split(r'(?<=[.!?।॥])\s+', normalized)
+        chunks: list[str] = []
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            while len(sentence) > max_chars:
+                cut = sentence.rfind(' ', 0, max_chars + 1)
+                if cut < max_chars // 2:
+                    cut = max_chars
+                piece = sentence[:cut].strip()
+                if piece:
+                    chunks.append(piece)
+                sentence = sentence[cut:].strip()
+            if sentence:
+                chunks.append(sentence)
+        return chunks or [normalized]
+
+    def _description_inputs(self, language: str, speaker: str, device: torch.device, tokenizer: Any):
+        cache_key = (language, speaker or 'classroom_teacher')
+        with self._lock:
+            cached = self._description_cache.get(cache_key)
+        if cached is not None:
+            ids, mask = cached
+            return ids.to(device), mask.to(device)
+        encoded = tokenizer(
+            self._description(language, speaker),
+            return_tensors='pt',
+            truncation=True,
+            max_length=128,
+        )
+        with self._lock:
+            self._description_cache[cache_key] = (encoded.input_ids.cpu(), encoded.attention_mask.cpu())
+        return encoded.input_ids.to(device), encoded.attention_mask.to(device)
+
     def _generate_waveform(self, text: str, language: str, speaker: str) -> tuple[np.ndarray, int]:
         model, tokenizer, description_tokenizer, feature, device = self._load()
-        description_inputs = description_tokenizer(
-            self._description(language, speaker), return_tensors='pt'
-        ).to(device)
-        words = text.split()
-        chunks = [' '.join(words[i:i + 18]) for i in range(0, len(words), 18)] or [text]
+        description_ids, description_mask = self._description_inputs(language, speaker, device, description_tokenizer)
+        chunks = self._split_prompt_text(text, max_chars=240)
         audio_chunks: list[np.ndarray] = []
         sampling_rate = int(feature.sampling_rate)
         with torch.inference_mode():
             for chunk in chunks:
-                prompt_inputs = tokenizer(chunk, return_tensors='pt').to(device)
+                prompt_inputs = tokenizer(
+                    chunk,
+                    return_tensors='pt',
+                    truncation=True,
+                    max_length=256,
+                ).to(device)
                 generation = model.generate(
-                    input_ids=description_inputs.input_ids,
-                    attention_mask=description_inputs.attention_mask,
+                    input_ids=description_ids,
+                    attention_mask=description_mask,
                     prompt_input_ids=prompt_inputs.input_ids,
                     prompt_attention_mask=prompt_inputs.attention_mask,
                     do_sample=False,
@@ -218,12 +264,7 @@ class IndicParlerTTSAdapter:
                     yield waveform, rate
                 return
 
-            description_inputs = description_tokenizer(
-                self._description(language, speaker),
-                return_tensors='pt',
-                truncation=True,
-                max_length=128,
-            ).to(device)
+            description_ids, description_mask = self._description_inputs(language, speaker, device, description_tokenizer)
             words = text.split()
             prompt_text = ' '.join(words[:256])
             prompt_inputs = tokenizer(
@@ -244,8 +285,8 @@ class IndicParlerTTSAdapter:
             generation_finished = threading.Event()
 
             generation_kwargs = {
-                'input_ids': description_inputs.input_ids,
-                'attention_mask': description_inputs.attention_mask,
+                'input_ids': description_ids,
+                'attention_mask': description_mask,
                 'prompt_input_ids': prompt_inputs.input_ids,
                 'prompt_attention_mask': prompt_inputs.attention_mask,
                 'streamer': streamer,
@@ -335,5 +376,6 @@ class IndicParlerTTSAdapter:
         with self._lock:
             self._bundle = None
             self._audio_cache.clear()
+            self._description_cache.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

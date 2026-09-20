@@ -1,5 +1,5 @@
 """
-BhashaSaathi - single-file local real-time speech translation prototype.
+BhashaSaathi - single-file local speech translation + temporary local P2P phone system.
 
 Expected directory layout (relative to this file):
 
@@ -26,10 +26,9 @@ Additional runtime packages used by this single file:
     scipy
     sounddevice
     soundfile
-    soundcard  # Windows/WASAPI output path (recommended)
 
 Example install command:
-    pip install numpy scipy sounddevice soundfile soundcard
+    pip install numpy scipy sounddevice soundfile
 
 This program intentionally uses local_files_only=True for the Transformers-based
 models. It will not silently download model weights during inference.
@@ -40,16 +39,20 @@ IMPORTANT:
 - The supplied handoff also says Parler-TTS is currently blocked until the
   local FLAN-T5 description tokenizer exists at models/tts/flan-t5-large
   (or PARLER_DESCRIPTION_TOKENIZER points to it).
-- This prototype is one-way live translation per run. Use Swap and restart for
-  the reverse direction. True automatic two-speaker diarized conversation is a
-  separate layer and is deliberately not faked here.
+- Mode 1 keeps the existing local laptop microphone pipeline.
+- Mode 2 starts a local FastAPI/WebSocket server for temporary two-phone push-to-talk
+  conversations. The laptop runs STT, translation and TTS; phones are browser UI clients.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import gc
 import io
+import json
+import secrets
+import socket
 import math
 import os
 import queue
@@ -87,18 +90,23 @@ try:
 except Exception as exc:  # pragma: no cover
     raise SystemExit("Missing soundfile. Install with: pip install soundfile") from exc
 
-if sys.platform.startswith("win"):
-    try:
-        import winsound
-    except Exception:
-        winsound = None
-else:
-    winsound = None
-
 try:
     import soundcard as sc
 except Exception:
     sc = None
+
+try:
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.responses import HTMLResponse
+    import uvicorn
+    FASTAPI_AVAILABLE = True
+except Exception:
+    FastAPI = None
+    WebSocket = Any
+    WebSocketDisconnect = Exception
+    HTMLResponse = Any
+    uvicorn = None
+    FASTAPI_AVAILABLE = False
 
 try:
     import torch
@@ -111,7 +119,7 @@ except Exception as exc:  # pragma: no cover
     raise SystemExit("Missing faster-whisper. Install with: pip install faster-whisper") from exc
 
 try:
-    from transformers import AutoFeatureExtractor, AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 except Exception as exc:  # pragma: no cover
     raise SystemExit("Missing transformers. Install the pinned version from the BhashaSaathi handoff.") from exc
 
@@ -122,16 +130,13 @@ except Exception as exc:  # pragma: no cover
 
 try:
     from parler_tts import ParlerTTSForConditionalGeneration
-    try:
-        from parler_tts import ParlerTTSStreamer
-    except Exception:
-        ParlerTTSStreamer = None
 except Exception as exc:  # pragma: no cover
     raise SystemExit("Missing parler-tts. Install parler-tts==0.2.2") from exc
 
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
+    from tkinter.scrolledtext import ScrolledText
 except Exception as exc:  # pragma: no cover
     raise SystemExit("Tkinter is required. On Windows it is normally included with Python.") from exc
 
@@ -142,15 +147,7 @@ except Exception as exc:  # pragma: no cover
 
 APP_NAME = "BhashaSaathi"
 ROOT_DIR = Path(__file__).resolve().parent
-
-def _resolve_model_root() -> Path:
-    candidates = [ROOT_DIR / "models", ROOT_DIR]
-    for candidate in candidates:
-        if (candidate / "stt" / "whisper-small").exists():
-            return candidate
-    return candidates[0]
-
-MODEL_ROOT = _resolve_model_root()
+MODEL_ROOT = ROOT_DIR / "models"
 
 STT_DIR = MODEL_ROOT / "stt" / "whisper-small"
 EN_INDIC_DIR = MODEL_ROOT / "translation" / "en-indic"
@@ -167,16 +164,9 @@ MAX_STAGE_QUEUE = 24
 # Speech segmentation / VAD-like energy parameters.
 PRE_ROLL_MS = 180
 START_HOLD_MS = 120
-END_SILENCE_MS = 280
-MIN_UTTERANCE_MS = 250
-# Do not wait for the speaker to finish a long sentence. Continuous speech is
-# emitted in short live chunks so STT/translation/TTS can begin while the user
-# is still talking. This is intentionally a product-level latency trade-off.
-MAX_UTTERANCE_MS = 2_200
-BOUNDARY_SEARCH_MS = 550
-LIVE_MIN_CHUNK_MS = 1_200
-TTS_STREAM_SECONDS = float(os.getenv("BHASHA_TTS_STREAM_SECONDS", "1.0"))
-TTS_STREAM_TIMEOUT_S = float(os.getenv("BHASHA_TTS_STREAM_TIMEOUT", "15.0"))
+END_SILENCE_MS = 450
+MIN_UTTERANCE_MS = 300
+MAX_UTTERANCE_MS = 10_000
 START_DB = -39.0
 SPEECH_OFFSET_DB = 7.0
 SILENCE_OFFSET_DB = 3.0
@@ -189,35 +179,37 @@ MAX_TRANSLATION_LENGTH = 256
 
 # Parler description. The model's prompt text is the translated sentence;
 # this description controls the speaking style.
-TTS_SPEAKERS = {
-    "Assamese": "Amit",
-    "Bengali": "Arjun",
-    "Gujarati": "Yash",
-    "Hindi": "Rohit",
-    "Kannada": "Suresh",
-    "Malayalam": "Harish",
-    "Marathi": "Sanjay",
-    "Nepali": "Ram",
-    "Odia": "Manas",
-    "Punjabi": "Gurpreet",
-    "Tamil": "Jaya",
-    "Telugu": "Prakash",
-    "Urdu": "Rohit",
-    "English": "Thoma",
+TTS_DESCRIPTION = (
+    "A clear natural Indian speaker delivers the sentence at a moderate pace "
+    "with clear pronunciation, consistent volume, and very clear audio."
+)
+
+TTS_LANGUAGE_DESCRIPTIONS: dict[str, str] = {
+    "English": "Thoma speaks clear Indian English at a moderate pace with natural pronunciation and consistent volume.",
+    "Hindi": "Rohit speaks clear Hindi at a moderate pace with natural Indian pronunciation and consistent volume.",
+    "Marathi": "Sanjay speaks clear Marathi at a moderate pace with natural pronunciation and consistent volume.",
+    "Bengali": "Arjun speaks clear Bengali at a moderate pace with natural pronunciation and consistent volume.",
+    "Gujarati": "Yash speaks clear Gujarati at a moderate pace with natural pronunciation and consistent volume.",
+    "Kannada": "Suresh speaks clear Kannada at a moderate pace with natural pronunciation and consistent volume.",
+    "Malayalam": "Anjali speaks clear Malayalam at a moderate pace with natural pronunciation and consistent volume.",
+    "Punjabi": "A clear natural Punjabi speaker speaks at a moderate pace with natural pronunciation and consistent volume.",
+    "Tamil": "Jaya speaks clear Tamil at a moderate pace with natural pronunciation and consistent volume.",
+    "Telugu": "Prakash speaks clear Telugu at a moderate pace with natural pronunciation and consistent volume.",
+    "Odia": "Manas speaks clear Odia at a moderate pace with natural pronunciation and consistent volume.",
+    "Assamese": "A clear natural Assamese speaker speaks at a moderate pace with natural pronunciation and consistent volume.",
+    "Nepali": "Amrita speaks clear Nepali at a moderate pace with natural pronunciation and consistent volume.",
+    "Urdu": "A clear natural Urdu speaker speaks at a moderate pace with natural pronunciation and consistent volume.",
+    "Santali (experimental)": "A clear natural Santali speaker speaks at a moderate pace with natural pronunciation and consistent volume.",
 }
 
-
-def tts_description_for(language_name: str) -> str:
-    speaker = TTS_SPEAKERS.get(language_name)
-    if speaker:
-        return (
-            f"{speaker}'s voice is clear and natural, speaking at a moderate pace "
-            "with clear pronunciation and very clear audio in a close-sounding recording."
-        )
-    return (
-        "A clear natural Indian speaker delivers the sentence at a moderate pace "
-        "with clear pronunciation and very clear audio in a close-sounding recording."
-    )
+P2P_HOST = os.getenv("BHASHA_P2P_HOST", "0.0.0.0")
+P2P_PORT = int(os.getenv("BHASHA_P2P_PORT", "8765"))
+P2P_ROOM_TTL_S = int(os.getenv("BHASHA_P2P_ROOM_TTL_S", "1800"))
+P2P_MAX_RECORDING_S = int(os.getenv("BHASHA_P2P_MAX_RECORDING_S", "15"))
+P2P_HTTPS = os.getenv("BHASHA_P2P_HTTPS", "1").strip().lower() not in {"0", "false", "no", "off"}
+P2P_TLS_DIR = ROOT_DIR / ".bhashasaathi_tls"
+P2P_CERT_FILE = P2P_TLS_DIR / "bhashasaathi-local.crt"
+P2P_KEY_FILE = P2P_TLS_DIR / "bhashasaathi-local.key"
 
 # Optional environment controls.
 # BHASHA_MODEL_DEVICE=cpu|cuda|auto
@@ -225,8 +217,8 @@ MODEL_DEVICE_OVERRIDE = os.getenv("BHASHA_MODEL_DEVICE", "auto").strip().lower()
 PARLER_DESCRIPTION_TOKENIZER = Path(
     os.getenv("PARLER_DESCRIPTION_TOKENIZER", str(DEFAULT_FLAN_DIR))
 ).expanduser()
-if not PARLER_DESCRIPTION_TOKENIZER.is_absolute():
-    PARLER_DESCRIPTION_TOKENIZER = (ROOT_DIR / PARLER_DESCRIPTION_TOKENIZER).resolve()
+TTS_DEVICE_OVERRIDE = os.getenv("BHASHA_TTS_DEVICE", "auto").strip().lower()
+LOCAL_CONVERSATION_MODES = ("Turn-by-turn (stable)", "Continuous (low-latency)")
 
 
 # -----------------------------
@@ -342,108 +334,14 @@ def resample_to_16k(audio: np.ndarray, source_rate: int) -> np.ndarray:
     return np.asarray(out, dtype=np.float32)
 
 
-def get_output_config(output_device: int, preferred_rate: int) -> tuple[int, int]:
-    """Choose a sample rate/channel count accepted by the selected Windows output device.
-
-    WASAPI Bluetooth devices often expose stereo-only endpoints.  The previous
-    implementation forced mono and then used the blocking OutputStream.write()
-    API, which can fail on some WASAPI devices.  We now select a valid channel
-    count and use callback-driven playback instead.
-    """
-    info = sd.query_devices(output_device, "output")
-    default_rate = int(round(float(info.get("default_samplerate", 48000))))
-    max_channels = int(info.get("max_output_channels", 2) or 2)
-    channel_candidates = [2, 1] if max_channels >= 2 else [1]
-    rate_candidates: list[int] = []
-    for rate in (preferred_rate, default_rate, 48000, 44100, 32000, 24000, 16000):
-        rate = int(rate)
-        if rate > 0 and rate not in rate_candidates:
-            rate_candidates.append(rate)
-
-    errors: list[str] = []
-    for channels in channel_candidates:
-        for rate in rate_candidates:
-            try:
-                sd.check_output_settings(
-                    device=output_device,
-                    samplerate=rate,
-                    channels=channels,
-                    dtype="float32",
-                )
-                return rate, channels
-            except Exception as exc:
-                errors.append(f"{rate}Hz/{channels}ch: {exc}")
-
-    raise RuntimeError(
-        f"Output device {output_device} ({info.get('name', 'unknown')}) does not accept the tested "
-        f"audio formats. Last errors: {' | '.join(errors[-4:])}"
-    )
-
-
-def get_output_sample_rate(output_device: int, preferred_rate: int) -> int:
-    return get_output_config(output_device, preferred_rate)[0]
-
-
 def resample_audio(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarray:
-    """High-quality CPU resampling used only at the audio-device boundary."""
-    if audio.size == 0 or source_rate == target_rate:
+    if source_rate == target_rate:
         return np.asarray(audio, dtype=np.float32)
-    g = math.gcd(int(source_rate), int(target_rate))
-    up = int(target_rate) // g
-    down = int(source_rate) // g
-    return np.asarray(
-        scipy.signal.resample_poly(np.asarray(audio, dtype=np.float32), up, down),
-        dtype=np.float32,
-    )
-
-
-def _normalize_device_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
-
-
-def _soundcard_speaker_choices() -> list[tuple[str, Any]]:
-    """Return stable UI labels for actual SoundCard/WASAPI speakers."""
-    if sc is None:
-        return []
-    try:
-        speakers = sc.all_speakers()
-        default_speaker = sc.default_speaker()
-        default_name = _normalize_device_name(getattr(default_speaker, "name", ""))
-    except Exception:
-        return []
-    choices: list[tuple[str, Any]] = []
-    seen: set[str] = set()
-    for i, speaker in enumerate(speakers):
-        name = str(getattr(speaker, "name", f"Speaker {i}"))
-        if not name:
-            continue
-        marker = " | DEFAULT OUT" if _normalize_device_name(name) == default_name else ""
-        label = f"SC:{i}: {name} [WASAPI{marker}]"
-        if label not in seen:
-            choices.append((label, speaker))
-            seen.add(label)
-    return choices
-
-
-def soundcard_speaker_from_label(label: str):
-    if sc is None or not label.startswith("SC:"):
-        return None
-    try:
-        idx = int(label.split(":", 2)[1].strip())
-    except Exception:
-        return None
-    try:
-        speakers = sc.all_speakers()
-        if 0 <= idx < len(speakers):
-            return speakers[idx]
-    except Exception:
-        return None
-    return None
-
-
-def resolve_legacy_sounddevice_output(label: str) -> Optional[int]:
-    """Fallback for systems where SoundCard is unavailable."""
-    return find_device_index(label)
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.size == 0:
+        return audio
+    target_len = max(1, int(round(len(audio) * target_rate / source_rate)))
+    return scipy.signal.resample(audio, target_len).astype(np.float32, copy=False)
 
 
 def cleanup_torch() -> None:
@@ -476,20 +374,6 @@ def choose_compute_device() -> str:
         return "cpu"
 
 
-def choose_tts_device() -> str:
-    override = os.getenv("BHASHA_TTS_DEVICE", "auto").strip().lower()
-    if override == "cpu":
-        return "cpu"
-    if override == "cuda" and torch.cuda.is_available():
-        return "cuda"
-    # For TTS specifically, prefer CUDA whenever available because autoregressive
-    # waveform generation is the current latency bottleneck. If loading fails
-    # with OOM, the engine automatically falls back to CPU.
-    if override == "auto" and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-
 def choose_whisper_device() -> tuple[str, str]:
     if torch.cuda.is_available():
         try:
@@ -520,71 +404,22 @@ def tensor_to_numpy_audio(tensor: Any) -> np.ndarray:
     return np.clip(arr, -1.0, 1.0).astype(np.float32)
 
 
-def _device_role_tag(device: dict[str, Any]) -> str:
+def pretty_device_name(index: int, device: dict[str, Any]) -> str:
     kind = []
     if int(device.get("max_input_channels", 0)) > 0:
         kind.append("IN")
     if int(device.get("max_output_channels", 0)) > 0:
         kind.append("OUT")
-    return "/".join(kind)
-
-
-def _is_likely_virtual_or_loopback(name: str) -> bool:
-    low = name.lower()
-    blocked = (
-        "stereo mix",
-        "what u hear",
-        "wave out",
-        "loopback",
-        "cable output",
-        "voicemeeter",
-        "virtual",
-        "vb-audio",
-        "monitor",
-    )
-    return any(token in low for token in blocked)
-
-
-def _preferred_input_name(name: str) -> bool:
-    low = name.lower()
-    return any(token in low for token in (
-        "microphone array", "microphone", "mic", "realtek", "usb", "webcam"
-    )) and not _is_likely_virtual_or_loopback(name)
-
-
-def _preferred_output_name(name: str) -> bool:
-    low = name.lower()
-    # Prefer normal stereo headphones/earbuds over Bluetooth Hands-Free/HFP.
-    return any(token in low for token in (
-        "headphones", "headphone", "earphones", "earphone", "buds", "stereo", "speaker"
-    )) and "hands-free" not in low and "headset" not in low
-
-
-def pretty_device_name(index: int, device: dict[str, Any], default_in: int | None = None, default_out: int | None = None) -> str:
-    tag = _device_role_tag(device)
-    markers = []
-    if default_in == index:
-        markers.append("DEFAULT IN")
-    if default_out == index:
-        markers.append("DEFAULT OUT")
-    marker = f" | {' + '.join(markers)}" if markers else ""
-    return f"{index}: {device['name']} [{tag}{marker}]"
+    tag = "/".join(kind)
+    return f"{index}: {device['name']} [{tag}]"
 
 
 def list_audio_devices() -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
     inputs: list[tuple[int, str]] = []
     outputs: list[tuple[int, str]] = []
-    try:
-        default_in, default_out = sd.default.device
-        default_in = int(default_in) if default_in is not None and int(default_in) >= 0 else None
-        default_out = int(default_out) if default_out is not None and int(default_out) >= 0 else None
-    except Exception:
-        default_in = default_out = None
-
     for idx, d in enumerate(sd.query_devices()):
-        label = pretty_device_name(idx, d, default_in, default_out)
+        label = pretty_device_name(idx, d)
         if int(d.get("max_input_channels", 0)) > 0:
-            # Keep all valid input devices visible, but mark likely bad loopbacks.
             inputs.append((idx, label))
         if int(d.get("max_output_channels", 0)) > 0:
             outputs.append((idx, label))
@@ -596,6 +431,23 @@ def find_device_index(label: str) -> Optional[int]:
         return None
     m = re.match(r"\s*(\d+)\s*:", label)
     return int(m.group(1)) if m else None
+
+
+def soundcard_speaker_for_portaudio_index(index: int) -> Any:
+    if sc is None:
+        return None
+    try:
+        name = str(sd.query_devices(index).get("name", "")).strip().lower()
+        speakers = list(sc.all_speakers())
+        for speaker in speakers:
+            sp_name = str(getattr(speaker, "name", "")).strip().lower()
+            if sp_name == name or name in sp_name or sp_name in name:
+                return speaker
+        # If the selected endpoint cannot be matched, prefer the Windows default
+        # speaker rather than silently opening a random PortAudio endpoint.
+        return sc.default_speaker()
+    except Exception:
+        return None
 
 
 def split_sentences(text: str, max_chars: int = 320) -> list[str]:
@@ -780,43 +632,37 @@ class IndicTranslationEngine:
 
 
 class ParlerTTSEngine:
-    def __init__(self, ui: "UIBridge", model_dir: Path, description_tokenizer_dir: Path, target_language_name: str) -> None:
+    def __init__(self, ui: "UIBridge", model_dir: Path, description_tokenizer_dir: Path) -> None:
         self.ui = ui
         self.model_dir = model_dir
         self.description_tokenizer_dir = description_tokenizer_dir
-        self.target_language_name = target_language_name
-        self.device = choose_tts_device()
+        self.device = self._choose_tts_device()
         self.dtype = device_dtype(self.device)
         self.model: Optional[Any] = None
         self.prompt_tokenizer: Optional[Any] = None
         self.description_tokenizer: Optional[Any] = None
-        self.feature_extractor: Optional[Any] = None
-        self.sampling_rate = 44100
-        self.frame_rate = 86
+        self._description_cache: dict[str, dict[str, torch.Tensor]] = {}
         self._lock = threading.Lock()
-        self.streaming_supported = ParlerTTSStreamer is not None
 
-    def _load_model_on(self, device: str) -> Any:
-        kwargs: dict[str, Any] = {"local_files_only": True}
-        if device == "cuda":
-            kwargs["torch_dtype"] = torch.float16
-
-        # Parler-TTS officially supports SDPA. The project documents SDPA as
-        # faster than eager attention and recommends it before considering
-        # Flash Attention 2. We therefore request SDPA explicitly and fall back
-        # only when the installed Transformers/Parler stack rejects the argument.
-        try:
-            model = ParlerTTSForConditionalGeneration.from_pretrained(
-                str(self.model_dir),
-                attn_implementation="sdpa",
-                **kwargs,
-            )
-        except (TypeError, ValueError):
-            model = ParlerTTSForConditionalGeneration.from_pretrained(
-                str(self.model_dir),
-                **kwargs,
-            )
-        return model.to(device)
+    @staticmethod
+    def _choose_tts_device() -> str:
+        if TTS_DEVICE_OVERRIDE == "cpu":
+            return "cpu"
+        if TTS_DEVICE_OVERRIDE == "cuda":
+            if torch.cuda.is_available():
+                return "cuda"
+            return "cpu"
+        # Auto mode stays conservative for 4 GB-class GPUs; manually set
+        # BHASHA_TTS_DEVICE=cuda when the machine has enough VRAM and the user
+        # wants to benchmark the GPU path. Translation can remain on CPU.
+        if torch.cuda.is_available():
+            try:
+                props = torch.cuda.get_device_properties(0)
+                if props.total_memory / (1024 ** 3) >= 6.0:
+                    return "cuda"
+            except Exception:
+                pass
+        return "cpu"
 
     def load(self) -> None:
         with self._lock:
@@ -828,395 +674,138 @@ class ParlerTTSEngine:
                 raise FileNotFoundError(
                     "Parler-TTS is blocked because the local FLAN-T5 description tokenizer "
                     f"was not found at: {self.description_tokenizer_dir}\n"
-                    "Set PARLER_DESCRIPTION_TOKENIZER to the directory containing the FLAN-T5 tokenizer assets."
+                    "Set PARLER_DESCRIPTION_TOKENIZER to the directory containing "
+                    "config.json, tokenizer.json/tokenizer_config.json and spiece.model."
                 )
 
             self.ui.status(f"Loading Parler-TTS on {self.device}...")
             self.prompt_tokenizer = AutoTokenizer.from_pretrained(
-                str(self.model_dir), local_files_only=True
+                str(self.model_dir),
+                local_files_only=True,
             )
             self.description_tokenizer = AutoTokenizer.from_pretrained(
-                str(self.description_tokenizer_dir), local_files_only=True
-            )
-            self.feature_extractor = AutoFeatureExtractor.from_pretrained(
-                str(self.model_dir), local_files_only=True
+                str(self.description_tokenizer_dir),
+                local_files_only=True,
             )
 
-            try:
-                self.model = self._load_model_on(self.device)
-            except RuntimeError as exc:
-                # A 4-GB-class laptop GPU may not have enough VRAM for the whole
-                # local TTS stack. Falling back automatically is better than killing
-                # the live app; the user can force a device with BHASHA_TTS_DEVICE.
-                if self.device == "cuda" and "out of memory" in str(exc).lower():
-                    self.ui.warning("TTS GPU memory is insufficient; falling back to CPU. Set BHASHA_TTS_DEVICE=cpu to silence this warning.")
-                    cleanup_torch()
-                    self.device = "cpu"
-                    self.dtype = torch.float32
-                    self.model = self._load_model_on("cpu")
-                else:
-                    raise
+            kwargs: dict[str, Any] = {
+                "local_files_only": True,
+            }
+            if self.device == "cuda":
+                kwargs["torch_dtype"] = self.dtype
 
+            self.model = ParlerTTSForConditionalGeneration.from_pretrained(
+                str(self.model_dir),
+                **kwargs,
+            )
+            self.model = self.model.to(self.device)
             self.model.eval()
-            self.sampling_rate = int(
-                getattr(self.feature_extractor, "sampling_rate", None)
-                or getattr(self.model.config, "sampling_rate", 44100)
+            self.ui.status("Parler-TTS ready")
+
+
+    def synthesize(self, text: str, target_language: Optional[str] = None) -> tuple[np.ndarray, int, float]:
+        """Generate the complete translated utterance, in FIFO order.
+
+        This stable path deliberately generates one complete utterance before
+        playback.  It is slower to first audio than a streamer, but it is much
+        more reliable on Windows laptops and guarantees every queued utterance
+        becomes one complete AudioJob.
+        """
+        self.load()
+        if self.model is None or self.prompt_tokenizer is None or self.description_tokenizer is None:
+            raise RuntimeError("Parler-TTS did not initialize")
+
+        started = time.perf_counter()
+        sentences = split_sentences(text, max_chars=320)
+        if not sentences:
+            return np.zeros(0, dtype=np.float32), 44100, 0.0
+
+        sampling_rate = int(
+            getattr(
+                getattr(self.model, "audio_encoder", None),
+                "config",
+                getattr(self.model, "config", None),
+            ).sampling_rate
+            if getattr(getattr(self.model, "audio_encoder", None), "config", None) is not None
+            else getattr(self.model.config, "sampling_rate", 44100)
+        )
+
+        description = TTS_LANGUAGE_DESCRIPTIONS.get(target_language or "", TTS_DESCRIPTION)
+        cached = self._description_cache.get(target_language or "")
+        if cached is None:
+            desc_inputs = self.description_tokenizer(
+                description,
+                return_tensors="pt",
+                truncation=True,
             )
-            self.frame_rate = int(
-                getattr(self.model.audio_encoder.config, "frame_rate", 86)
+            cached = {k: v.to(self.device) for k, v in desc_inputs.items()}
+            self._description_cache[target_language or ""] = cached
+
+        audio_parts: list[np.ndarray] = []
+        generation_times: list[float] = []
+        for idx, part in enumerate(sentences, start=1):
+            prompt_inputs = self.prompt_tokenizer(
+                part,
+                return_tensors="pt",
+                truncation=True,
+                max_length=256,
             )
-            self.streaming_supported = ParlerTTSStreamer is not None
+            prompt_inputs = {k: v.to(self.device) for k, v in prompt_inputs.items()}
+
+            generate_kwargs = {
+                "input_ids": cached["input_ids"],
+                "prompt_input_ids": prompt_inputs["input_ids"],
+                "attention_mask": cached.get("attention_mask"),
+                "prompt_attention_mask": prompt_inputs.get("attention_mask"),
+                "do_sample": False,
+                "use_cache": True,
+            }
+            generate_kwargs = {k: v for k, v in generate_kwargs.items() if v is not None}
+
+            piece_started = time.perf_counter()
+            try:
+                with torch.inference_mode():
+                    generation = self.model.generate(**generate_kwargs)
+            except TypeError:
+                fallback_kwargs = {
+                    "input_ids": cached["input_ids"],
+                    "prompt_input_ids": prompt_inputs["input_ids"],
+                    "do_sample": False,
+                    "use_cache": True,
+                }
+                with torch.inference_mode():
+                    generation = self.model.generate(**fallback_kwargs)
+
+            piece_audio = tensor_to_numpy_audio(generation)
+            audio_parts.append(piece_audio)
+            piece_elapsed = max(time.perf_counter() - piece_started, 0.0)
+            generation_times.append(piece_elapsed)
+            piece_seconds = len(piece_audio) / float(sampling_rate) if sampling_rate else 0.0
             self.ui.status(
-                f"Parler-TTS ready ({self.sampling_rate} Hz, {self.device.upper()}, "
-                f"stream={TTS_STREAM_SECONDS:.2f}s, "
-                + ("streaming)" if self.streaming_supported else "full-generation fallback)"))
-            
-    def _tokenize(self, text: str) -> tuple[Any, Any]:
-        if self.description_tokenizer is None or self.prompt_tokenizer is None:
-            raise RuntimeError("Parler-TTS tokenizers are not initialized")
-        description = tts_description_for(self.target_language_name)
-        description_inputs = self.description_tokenizer(
-            description, return_tensors="pt", truncation=True, max_length=128
-        ).to(self.device)
-        prompt_inputs = self.prompt_tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=256
-        ).to(self.device)
-        return description_inputs, prompt_inputs
-
-    def _full_generate(self, text: str) -> np.ndarray:
-        if self.model is None:
-            raise RuntimeError("Parler-TTS model is not loaded")
-        description_inputs, prompt_inputs = self._tokenize(text)
-        with torch.inference_mode():
-            generation = self.model.generate(
-                input_ids=description_inputs.input_ids,
-                attention_mask=description_inputs.attention_mask,
-                prompt_input_ids=prompt_inputs.input_ids,
-                prompt_attention_mask=prompt_inputs.attention_mask,
-                do_sample=True,
-                temperature=1.0,
-                top_k=50,
-                top_p=1.0,
-                use_cache=True,
-                min_new_tokens=10,
+                f"TTS #{idx}/{len(sentences)} generated • {piece_elapsed:.2f}s compute → {piece_seconds:.2f}s audio"
             )
-        if hasattr(generation, "sequences"):
-            if hasattr(generation, "audios_length") and generation.audios_length is not None:
-                length = int(generation.audios_length[0].item())
-                waveform = generation.sequences[0, :length]
-            else:
-                waveform = generation.sequences[0]
+            del generation, prompt_inputs
+
+        gap = np.zeros(int(sampling_rate * 0.02), dtype=np.float32)
+        assembled: list[np.ndarray] = []
+        for i, piece in enumerate(audio_parts):
+            assembled.append(piece)
+            if i != len(audio_parts) - 1:
+                assembled.append(gap)
+        audio = np.concatenate(assembled).astype(np.float32) if assembled else np.zeros(0, dtype=np.float32)
+
+        elapsed = max(time.perf_counter() - started, 0.0)
+        audio_seconds = len(audio) / float(sampling_rate) if sampling_rate else 0.0
+        rtf = elapsed / audio_seconds if audio_seconds > 0 else 0.0
+        if rtf > 1.0:
+            self.ui.warning(
+                f"TTS generation is slower than playback: {elapsed:.2f}s compute for {audio_seconds:.2f}s audio (RTF {rtf:.2f}×, device={self.device})"
+            )
         else:
-            waveform = generation[0] if getattr(generation, "ndim", 1) > 1 else generation
-        return tensor_to_numpy_audio(waveform)
-
-    def synthesize(self, text: str) -> tuple[np.ndarray, int, float]:
-        """Compatibility path for diagnostics; live playback uses stream_to_output."""
-        self.load()
-        started = time.perf_counter()
-        sentences = split_sentences(text, max_chars=240)
-        parts = [self._full_generate(part) for part in sentences]
-        if not parts:
-            audio = np.zeros(0, dtype=np.float32)
-        else:
-            gap = np.zeros(int(self.sampling_rate * 0.02), dtype=np.float32)
-            assembled: list[np.ndarray] = []
-            for i, piece in enumerate(parts):
-                assembled.append(piece)
-                if i != len(parts) - 1:
-                    assembled.append(gap)
-            audio = np.concatenate(assembled).astype(np.float32)
-        return audio, self.sampling_rate, max(time.perf_counter() - started, 0.0)
-
-    def _play_callback_audio(
-        self,
-        audio: np.ndarray,
-        source_rate: int,
-        output_device: int,
-        stop_event: threading.Event,
-    ) -> float:
-        """Play a complete waveform through callback mode (not blocking write).
-
-        Some Windows WASAPI endpoints report that PortAudio's blocking API is not
-        supported.  Callback mode avoids that limitation and is also the mode used
-        by the live streamer below.
-        """
-        if audio.size == 0 or stop_event.is_set():
-            return 0.0
-
-        output_rate, channels = get_output_config(output_device, source_rate)
-        arr = resample_audio(audio, source_rate, output_rate)
-        state = {"pos": 0, "started": time.perf_counter(), "done": False}
-        lock = threading.Lock()
-        finished = threading.Event()
-
-        def callback(outdata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
-            if status:
-                pass
-            outdata.fill(0.0)
-            with lock:
-                if stop_event.is_set():
-                    finished.set()
-                    return
-                pos = int(state["pos"])
-                remaining = len(arr) - pos
-                take = min(frames, max(0, remaining))
-                if take > 0:
-                    mono = arr[pos:pos + take]
-                    if channels == 1:
-                        outdata[:take, 0] = mono
-                    else:
-                        outdata[:take, :] = mono[:, None]
-                    state["pos"] = pos + take
-                if state["pos"] >= len(arr):
-                    finished.set()
-
-        stream = None
-        try:
-            stream = sd.OutputStream(
-                samplerate=output_rate,
-                device=output_device,
-                channels=channels,
-                dtype="float32",
-                blocksize=0,
-                latency="high",
-                callback=callback,
+            self.ui.status(
+                f"TTS ready • {audio_seconds:.2f}s audio generated in {elapsed:.2f}s (RTF {rtf:.2f}×, device={self.device})"
             )
-            stream.start()
-            while not finished.wait(0.05):
-                if stop_event.is_set():
-                    break
-            return max(time.perf_counter() - state["started"], 0.0)
-        finally:
-            if stream is not None:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception:
-                    pass
-
-    def _play_wav_native_windows(self, audio: np.ndarray, sample_rate: int, stop_event: threading.Event) -> None:
-        """Play a short PCM WAV chunk through Windows Media Sound.
-
-        This intentionally bypasses PortAudio/WASAPI for the TTS playback path.
-        The user's Windows endpoint previously rejected PortAudio's blocking WASAPI
-        path (-9999). winsound uses the Windows multimedia playback path instead.
-        """
-        if winsound is None:
-            raise RuntimeError("Native Windows audio playback is unavailable")
-        if stop_event.is_set() or audio.size == 0:
-            return
-
-        pcm = io.BytesIO()
-        sf.write(pcm, np.asarray(audio, dtype=np.float32), int(sample_rate), format="WAV", subtype="PCM_16")
-        wav_bytes = pcm.getvalue()
-        # SND_MEMORY accepts the complete in-memory RIFF/WAV payload.
-        # PlaySound is synchronous by default; do not rely on SND_SYNC because
-        # some Windows Python builds expose the function without that constant.
-        winsound.PlaySound(wav_bytes, winsound.SND_MEMORY)
-
-    def _play_chunk(self, audio: np.ndarray, sample_rate: int, output_device: int, stop_event: threading.Event, player=None) -> None:
-        """Play one generated TTS chunk.
-
-        Preferred Windows path: SoundCard/WASAPI, because it addresses the selected
-        physical speaker directly and supports a persistent player for consecutive
-        chunks. Native winsound is the second Windows fallback, then sounddevice.
-        """
-        if stop_event.is_set() or audio.size == 0:
-            return
-
-        # If a persistent SoundCard player is supplied, queue this piece onto it.
-        if player is not None:
-            player.play(np.asarray(audio, dtype=np.float32))
-            return
-
-        if winsound is not None and sys.platform.startswith("win"):
-            try:
-                self._play_wav_native_windows(audio, sample_rate, stop_event)
-                return
-            except Exception as native_exc:
-                self.ui.warning(f"Native Windows TTS playback failed; trying soundcard/sounddevice: {native_exc}")
-
-        output_rate, channels = get_output_config(output_device, sample_rate)
-        arr = resample_audio(audio, sample_rate, output_rate)
-        if channels == 2:
-            arr = np.repeat(arr[:, None], 2, axis=1)
-        sd.play(arr, samplerate=output_rate, device=output_device, blocking=True)
-
-    def _play_with_soundcard_stream(self, speaker, pieces_iter, stop_event: threading.Event, on_first_audio, started: float) -> float:
-        """Play an iterable of generated mono chunks through one persistent SoundCard player."""
-        if sc is None or speaker is None:
-            raise RuntimeError("SoundCard speaker is unavailable")
-
-        # SoundCard expects frames x channels numpy arrays. Two-channel playback is
-        # used when available; Windows shared-mode WASAPI performs the device-side
-        # conversion. 48 kHz is the safest common rate for Bluetooth Windows audio.
-        channels_available = getattr(speaker, "channels", 2)
-        if isinstance(channels_available, int):
-            channels = max(1, min(int(channels_available), 2))
-        elif isinstance(channels_available, (list, tuple)):
-            channels = max(1, min(len(channels_available), 2))
-        else:
-            channels = 2
-
-        # Try the common Windows rate first, then the model's native 44.1 kHz.
-        last_error: Optional[BaseException] = None
-        for rate in (48000, self.sampling_rate, 44100):
-            if stop_event.is_set():
-                return max(time.perf_counter() - started, 0.0)
-            try:
-                with speaker.player(
-                    samplerate=int(rate),
-                    channels=channels,
-                    blocksize=512,
-                    exclusive_mode=False,
-                ) as player:
-                    self.ui.status(
-                        f"TTS audio: {getattr(speaker, 'name', 'speaker')} | "
-                        f"{rate} Hz / {channels}ch"
-                    )
-                    first_sent = False
-                    first_submit_at: Optional[float] = None
-                    submitted_audio_seconds = 0.0
-                    chunk_count = 0
-
-                    for raw_piece in pieces_iter:
-                        if stop_event.is_set():
-                            break
-                        piece = tensor_to_numpy_audio(raw_piece)
-                        if piece.size == 0:
-                            continue
-                        if self.sampling_rate != rate:
-                            piece = resample_audio(piece, self.sampling_rate, rate)
-                        if channels == 2:
-                            piece = np.repeat(piece[:, None], 2, axis=1)
-                        else:
-                            piece = piece.reshape(-1, 1)
-
-                        if not first_sent:
-                            first_sent = True
-                            first_submit_at = time.perf_counter()
-                            if on_first_audio is not None:
-                                on_first_audio(first_submit_at - started)
-
-                        player.play(piece.astype(np.float32, copy=False))
-                        submitted_audio_seconds += len(piece) / float(rate)
-                        chunk_count += 1
-                        if chunk_count == 1:
-                            self.ui.status(
-                                f"TTS audio streaming: first chunk {submitted_audio_seconds:.2f}s"
-                            )
-
-                    # CRITICAL: SoundCard's player.play() returns before all audio
-                    # has physically finished playing. Exiting the player context
-                    # immediately would stop the stream and can produce exactly the
-                    # 'TTS generated but I hear nothing' symptom. Keep the player
-                    # alive until the queued audio should have drained.
-                    if first_submit_at is not None and submitted_audio_seconds > 0:
-                        target_end = first_submit_at + submitted_audio_seconds + 0.20
-                        remaining = target_end - time.perf_counter()
-                        if remaining > 0 and not stop_event.is_set():
-                            time.sleep(remaining)
-
-                    self.ui.status(
-                        f"TTS playback drained: {submitted_audio_seconds:.2f}s audio / {chunk_count} chunks"
-                    )
-                    return max(time.perf_counter() - started, 0.0)
-            except Exception as exc:
-                last_error = exc
-                continue
-
-        raise RuntimeError(
-            f"SoundCard could not open the selected Windows speaker. "
-            f"Last error: {last_error}"
-        )
-
-    def stream_to_output(
-        self,
-        text: str,
-        output_device: Any,
-        stop_event: threading.Event,
-        on_first_audio: Optional[Callable[[float], None]] = None,
-    ) -> float:
-        """Reliable TTS path for the live pipeline.
-
-        The live system still runs STT, translation and this TTS worker in parallel,
-        but TTS generation is deliberately completed before playback. This avoids
-        the flaky Parler streamer path on the user's Windows laptop while preserving
-        FIFO ordering and overlap between pipeline stages.
-        """
-        self.load()
-        started = time.perf_counter()
-
-        selected_speaker = (
-            output_device
-            if (sc is not None and hasattr(output_device, "player"))
-            else None
-        )
-        if selected_speaker is None and sc is not None:
-            try:
-                selected_speaker = soundcard_speaker_from_label(str(output_device))
-            except Exception:
-                selected_speaker = None
-
-        # Generate one complete waveform first. This is the documented, deterministic
-        # Parler route and is substantially easier to debug than streaming codes.
-        self.ui.status("TTS: generating audio...")
-        audio = self._full_generate(text)
-
-        if audio.size == 0:
-            raise RuntimeError("Parler-TTS returned zero audio samples")
-        peak = float(np.max(np.abs(audio)))
-        rms = float(np.sqrt(np.mean(audio * audio)))
-        duration = len(audio) / float(self.sampling_rate)
-        self.ui.status(
-            f"TTS generated: {duration:.2f}s | peak={peak:.4f} rms={rms:.4f}"
-        )
-        if peak < 1e-5:
-            raise RuntimeError(
-                f"Parler-TTS generated effectively silent audio (peak={peak:.8f})"
-            )
-
-        # Optional diagnostic WAV. Enable with BHASHA_SAVE_TTS_DEBUG=1.
-        if os.getenv("BHASHA_SAVE_TTS_DEBUG", "1").strip().lower() in {"1", "true", "yes"}:
-            debug_path = ROOT_DIR / "bhashasaathi_tts_debug.wav"
-            try:
-                sf.write(
-                    str(debug_path),
-                    audio,
-                    self.sampling_rate,
-                    subtype="PCM_16",
-                )
-                self.ui.status(f"TTS debug WAV: {debug_path.name}")
-            except Exception as exc:
-                self.ui.warning(f"Could not save TTS debug WAV: {exc}")
-
-        if stop_event.is_set():
-            return max(time.perf_counter() - started, 0.0)
-
-        if on_first_audio is not None:
-            on_first_audio(time.perf_counter() - started)
-
-        # Preferred Windows path: exact SoundCard speaker selected in the UI.
-        if selected_speaker is not None:
-            return self._play_with_soundcard_stream(
-                selected_speaker,
-                (piece for piece in (audio,)),
-                stop_event,
-                None,
-                started,
-            )
-
-        # Legacy/non-Windows fallback.
-        if isinstance(output_device, int):
-            self._play_callback_audio(
-                audio,
-                self.sampling_rate,
-                output_device,
-                stop_event,
-            )
-
-        return max(time.perf_counter() - started, 0.0)
+        return audio, sampling_rate, elapsed
 
 
 # -----------------------------
@@ -1231,12 +820,17 @@ class MicrophoneSegmenter:
         segment_queue: queue.Queue,
         ui: "UIBridge",
         stop_event: threading.Event,
+        pause_capture: threading.Event,
+        turn_by_turn: bool,
     ) -> None:
         self.input_device = input_device
         self.callback_queue = callback_queue
         self.segment_queue = segment_queue
         self.ui = ui
         self.stop_event = stop_event
+        self.pause_capture = pause_capture
+        self.turn_by_turn = turn_by_turn
+        self.manual_finalize = threading.Event()
         self.thread = threading.Thread(target=self._run, name="segmenter", daemon=True)
         self.stream: Optional[sd.InputStream] = None
         self.sequence = 0
@@ -1269,10 +863,20 @@ class MicrophoneSegmenter:
         self.stop_event.set()
         self.thread.join(timeout=1.5)
 
-    def _emit_audio(self, audio: np.ndarray, start_at: float) -> None:
-        if audio.size == 0:
+    def request_finalize(self) -> None:
+        """Immediately finish the current utterance in turn-by-turn mode.
+
+        The microphone stream itself stays alive, but capture is paused as soon as
+        the current sentence is emitted. This gives the user an explicit "Done"
+        button while retaining automatic silence detection as a fallback.
+        """
+        if self.turn_by_turn:
+            self.manual_finalize.set()
+
+    def _emit_segment(self, chunks: list[np.ndarray], start_at: float) -> None:
+        if not chunks:
             return
-        audio = np.asarray(audio, dtype=np.float32)
+        audio = np.concatenate(chunks).astype(np.float32)
         duration_s = len(audio) / AUDIO_RATE
         if duration_s * 1000.0 < MIN_UTTERANCE_MS:
             return
@@ -1287,38 +891,17 @@ class MicrophoneSegmenter:
             duration_s=duration_s,
         )
         try:
+            if self.turn_by_turn:
+                # Lock the microphone immediately after the utterance is finalized.
+                # The rest of the pipeline can now STT → translate → TTS → playback
+                # without another utterance entering the queue.
+                self.pause_capture.set()
             self.segment_queue.put(seg, timeout=0.5)
             self.ui.segment_created(seg)
         except queue.Full:
             self.ui.warning("Speech queue is full. The system is behind real-time processing.")
-
-    def _emit_segment(self, chunks: list[np.ndarray], start_at: float) -> None:
-        if chunks:
-            self._emit_audio(np.concatenate(chunks).astype(np.float32), start_at)
-
-    def _find_live_boundary(self, audio: np.ndarray) -> int:
-        # Look for a low-energy pocket near the end of the live chunk. If one is
-        # present, cut there; otherwise cut at the chunk end. This reduces the
-        # chance of splitting exactly inside a phoneme while still avoiding a long
-        # wait for sentence-final silence.
-        min_len = int(AUDIO_RATE * LIVE_MIN_CHUNK_MS / 1000.0)
-        if len(audio) < min_len:
-            return len(audio)
-        search_len = min(len(audio), int(AUDIO_RATE * BOUNDARY_SEARCH_MS / 1000.0))
-        start = len(audio) - search_len
-        window = int(AUDIO_RATE * 0.06)
-        step = max(1, int(AUDIO_RATE * 0.03))
-        best_idx = len(audio)
-        best_db = 1e9
-        threshold = START_DB + 4.0
-        for i in range(start, len(audio) - window + 1, step):
-            db = rms_db(audio[i:i + window])
-            if db < best_db:
-                best_db = db
-                best_idx = i + window
-        if best_db <= threshold and best_idx >= min_len:
-            return best_idx
-        return len(audio)
+            if self.turn_by_turn:
+                self.pause_capture.clear()
 
     def _run(self) -> None:
         preroll_blocks = max(1, int(round(PRE_ROLL_MS / BLOCK_MS)))
@@ -1352,6 +935,17 @@ class MicrophoneSegmenter:
                     chunk = resample_to_16k(raw, self.input_rate)
                     if chunk.size == 0:
                         continue
+                    # In stable turn-by-turn mode we keep draining the audio callback
+                    # queue but do not create new utterances while translated TTS is
+                    # being generated/played. This prevents feedback and TTS backlog.
+                    if self.pause_capture.is_set():
+                        speech_active = False
+                        start_hold = 0.0
+                        silence_ms = 0.0
+                        utterance_ms = 0.0
+                        speech_chunks = []
+                        preroll.clear()
+                        continue
                     preroll.append(chunk)
 
                     db = rms_db(chunk)
@@ -1381,7 +975,9 @@ class MicrophoneSegmenter:
                         else:
                             silence_ms += BLOCK_MS
 
-                        if silence_ms >= END_SILENCE_MS:
+                        if silence_ms >= END_SILENCE_MS or utterance_ms >= MAX_UTTERANCE_MS or self.manual_finalize.is_set():
+                            forced = self.manual_finalize.is_set()
+                            self.manual_finalize.clear()
                             self._emit_segment(speech_chunks, speech_start_at or time.perf_counter())
                             speech_chunks = []
                             speech_active = False
@@ -1390,20 +986,13 @@ class MicrophoneSegmenter:
                             utterance_ms = 0.0
                             speech_start_at = 0.0
                             preroll.clear()
-                            self.ui.status("Listening...")
-                        elif utterance_ms >= MAX_UTTERANCE_MS:
-                            # LIVE MODE: emit a partial phrase even though the speaker
-                            # has not stopped. Keep listening immediately so the next
-                            # phrase can enter STT while this one reaches TTS.
-                            combined = np.concatenate(speech_chunks).astype(np.float32)
-                            cut = self._find_live_boundary(combined)
-                            self._emit_audio(combined[:cut], speech_start_at or time.perf_counter())
-                            remainder = combined[cut:]
-                            speech_chunks = [remainder] if remainder.size else []
-                            utterance_ms = len(remainder) / AUDIO_RATE * 1000.0
-                            speech_start_at = time.perf_counter() - utterance_ms / 1000.0
-                            silence_ms = 0.0
-                            self.ui.status("Live chunk sent → still listening...")
+                            self.ui.status("Turn sent — processing..." if forced else "Listening...")
+
+                    # If the user pressed the explicit Finish Turn button before VAD
+                    # had actually entered speech, just consume the request. Do not
+                    # pause the microphone forever with an empty segment.
+                    if self.manual_finalize.is_set() and not speech_active:
+                        self.manual_finalize.clear()
 
                 # Flush a final active utterance on shutdown.
                 if speech_active and speech_chunks:
@@ -1425,15 +1014,18 @@ class Pipeline:
         source: Language,
         target: Language,
         input_device: int,
-        output_device: Any,
+        output_device: int,
+        turn_by_turn: bool = True,
     ) -> None:
         self.ui = ui
         self.source = source
         self.target = target
         self.input_device = input_device
         self.output_device = output_device
+        self.turn_by_turn = bool(turn_by_turn)
 
         self.stop_event = threading.Event()
+        self.pause_capture = threading.Event()
         self.input_blocks: queue.Queue[np.ndarray] = queue.Queue(maxsize=MAX_INPUT_QUEUE)
         self.segment_queue: queue.Queue[SpeechSegment] = queue.Queue(maxsize=MAX_STAGE_QUEUE)
         self.stt_queue: queue.Queue[TextJob] = queue.Queue(maxsize=MAX_STAGE_QUEUE)
@@ -1445,7 +1037,7 @@ class Pipeline:
 
         self.whisper = WhisperEngine(STT_DIR, ui)
         self.translation = IndicTranslationEngine(ui, source, target)
-        self.tts = ParlerTTSEngine(ui, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER, target.name)
+        self.tts = ParlerTTSEngine(ui, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER)
         self.segmenter: Optional[MicrophoneSegmenter] = None
 
         self.ready = False
@@ -1481,8 +1073,6 @@ class Pipeline:
             )
         if self.target.name == self.source.name:
             self.ui.warning("Source and target are the same language: translation will be bypassed.")
-        if self.target.name == "Punjabi":
-            self.ui.warning("Punjabi is not an official language for this Indic Parler-TTS fine-tuned checkpoint; TTS may be experimental.")
 
     def prepare_models(self) -> None:
         self.starting = True
@@ -1504,6 +1094,20 @@ class Pipeline:
         finally:
             self.starting = False
 
+    def _release_turn_capture(self) -> None:
+        if self.turn_by_turn:
+            self.pause_capture.clear()
+
+    def finish_turn(self) -> None:
+        """Request immediate sentence finalization in turn-by-turn mode."""
+        if not self.turn_by_turn:
+            return
+        if self.segmenter is None:
+            self.ui.warning("Microphone is not ready yet.")
+            return
+        self.ui.status("Finishing your turn...")
+        self.segmenter.request_finalize()
+
     def start(self) -> None:
         if self.starting or self.ready:
             return
@@ -1520,6 +1124,7 @@ class Pipeline:
             threading.Thread(target=self._stt_worker, name="stt-worker", daemon=True),
             threading.Thread(target=self._translation_worker, name="translation-worker", daemon=True),
             threading.Thread(target=self._tts_worker, name="tts-worker", daemon=True),
+            threading.Thread(target=self._playback_worker, name="playback-worker", daemon=True),
         ]
         for t in self.threads:
             t.start()
@@ -1530,6 +1135,8 @@ class Pipeline:
             segment_queue=self.segment_queue,
             ui=self.ui,
             stop_event=self.stop_event,
+            pause_capture=self.pause_capture,
+            turn_by_turn=self.turn_by_turn,
         )
         self.segmenter.start()
         self.ui.started()
@@ -1537,6 +1144,7 @@ class Pipeline:
 
     def stop(self) -> None:
         self.stop_event.set()
+        self.pause_capture.clear()
         if self.segmenter is not None:
             self.segmenter.stop()
         try:
@@ -1574,26 +1182,22 @@ class Pipeline:
                 transcript, detected, probability, elapsed = self.whisper.transcribe(segment.audio, lang)
                 if not transcript.strip():
                     self.ui.warning(f"Segment {segment.sequence_id}: speech was detected but STT returned empty text")
+                    self._release_turn_capture()
                     continue
                 self.ui.transcript(segment.sequence_id, transcript, detected, probability)
-                queued = False
-                while not self.stop_event.is_set() and not queued:
-                    try:
-                        self.stt_queue.put(
-                            TextJob(
-                                segment=segment,
-                                transcript=transcript,
-                                detected_language=detected,
-                                language_probability=probability,
-                                stt_time_s=elapsed,
-                            ),
-                            timeout=0.25,
-                        )
-                        queued = True
-                    except queue.Full:
-                        self.ui.status("STT queue full — waiting for translation stage...")
+                self.stt_queue.put(
+                    TextJob(
+                        segment=segment,
+                        transcript=transcript,
+                        detected_language=detected,
+                        language_probability=probability,
+                        stt_time_s=elapsed,
+                    ),
+                    timeout=1.0,
+                )
             except Exception as exc:
                 self.ui.error(f"STT failed for segment {getattr(segment, 'sequence_id', '?')}: {exc}")
+                self._release_turn_capture()
 
     def _translation_worker(self) -> None:
         while not self.stop_event.is_set():
@@ -1604,26 +1208,21 @@ class Pipeline:
             try:
                 translated, elapsed = self.translation.translate(job.transcript)
                 self.ui.translation(job.segment.sequence_id, translated)
-                queued = False
-                while not self.stop_event.is_set() and not queued:
-                    try:
-                        self.translation_queue.put(
-                            TranslationJob(
-                                segment=job.segment,
-                                transcript=job.transcript,
-                                translated_text=translated,
-                                stt_time_s=job.stt_time_s,
-                                translation_time_s=elapsed,
-                            ),
-                            timeout=0.25,
-                        )
-                        queued = True
-                    except queue.Full:
-                        self.ui.status("Translation queue full — waiting for TTS stage...")
+                self.translation_queue.put(
+                    TranslationJob(
+                        segment=job.segment,
+                        transcript=job.transcript,
+                        translated_text=translated,
+                        stt_time_s=job.stt_time_s,
+                        translation_time_s=elapsed,
+                    ),
+                    timeout=1.0,
+                )
             except Exception as exc:
                 self.ui.error(
                     f"Translation failed for segment {getattr(job.segment, 'sequence_id', '?')}: {exc}"
                 )
+                self._release_turn_capture()
 
     def _tts_worker(self) -> None:
         while not self.stop_event.is_set():
@@ -1632,36 +1231,81 @@ class Pipeline:
             except queue.Empty:
                 continue
             try:
-                started = time.perf_counter()
-                first_audio_delay: list[float] = []
-
-                def mark_first_audio(delay: float) -> None:
-                    first_audio_delay.append(delay)
-                    self.ui.first_audio(job.segment.sequence_id, delay)
-
-                elapsed = self.tts.stream_to_output(
-                    job.translated_text,
-                    self.output_device,
-                    self.stop_event,
-                    on_first_audio=mark_first_audio,
-                )
-                wall = max(time.perf_counter() - started, 0.0)
+                audio, sample_rate, elapsed = self.tts.synthesize(job.translated_text, self.target.name)
+                if audio.size == 0:
+                    self.ui.warning(f"TTS returned empty audio for segment {job.segment.sequence_id}")
+                    self._release_turn_capture()
+                    continue
+                now = time.perf_counter()
+                ready_latency = now - job.segment.ended_at
                 with self.metrics_lock:
-                    self.last_latency = wall + (job.segment.ended_at - job.segment.created_at)
+                    self.last_latency = ready_latency
                     self.last_stt = job.stt_time_s
                     self.last_translation = job.translation_time_s
                     self.last_tts = elapsed
-                self.ui.played(job.segment.sequence_id)
-                self.ui.status("Listening... speak naturally")
+                self.playback_queue.put(
+                    AudioJob(
+                        segment=job.segment,
+                        transcript=job.transcript,
+                        translated_text=job.translated_text,
+                        audio=audio,
+                        sample_rate=sample_rate,
+                        stage_time_s=ready_latency,
+                        stt_time_s=job.stt_time_s,
+                        translation_time_s=job.translation_time_s,
+                        tts_time_s=elapsed,
+                        ready_at=now,
+                    ),
+                    timeout=2.0,
+                )
+                self.ui.ready_for_playback(job.segment.sequence_id, ready_latency)
             except Exception as exc:
                 self.ui.error(f"TTS failed for segment {getattr(job.segment, 'sequence_id', '?')}: {exc}")
+                self._release_turn_capture()
 
     def _playback_worker(self) -> None:
-        # Kept for compatibility with older pipeline state; live TTS now streams
-        # directly into the selected output device, preserving FIFO through the
-        # single TTS worker.
+        # Single FIFO playback worker intentionally preserves utterance order.
         while not self.stop_event.is_set():
-            time.sleep(0.2)
+            try:
+                job = self.playback_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                self.ui.status(f"Playing translated segment {job.segment.sequence_id}...")
+                if sc is not None:
+                    speaker = soundcard_speaker_for_portaudio_index(self.output_device)
+                    if speaker is None:
+                        raise RuntimeError("Selected SoundCard speaker could not be resolved")
+                    played = False
+                    errors = []
+                    for rate in (48000, 44100):
+                        try:
+                            arr = resample_audio(job.audio, job.sample_rate, rate)
+                            channels = getattr(speaker, "channels", 2)
+                            channels = channels if isinstance(channels, int) else 2
+                            arr = np.repeat(arr[:, None], 2, axis=1) if channels >= 2 else arr[:, None]
+                            with speaker.player(samplerate=rate, channels=min(channels, 2), blocksize=512, exclusive_mode=False) as player:
+                                player.play(arr.astype(np.float32, copy=False))
+                                deadline = time.perf_counter() + len(arr) / rate + 0.25
+                                while time.perf_counter() < deadline and not self.stop_event.is_set():
+                                    time.sleep(0.02)
+                            played = True
+                            break
+                        except Exception as exc:
+                            errors.append(str(exc))
+                    if not played:
+                        raise RuntimeError("SoundCard playback failed: " + " | ".join(errors))
+                else:
+                    sd.play(job.audio, samplerate=job.sample_rate, device=self.output_device, blocking=True)
+                self.ui.played(job.segment.sequence_id)
+            except Exception as exc:
+                self.ui.error(f"Audio playback failed: {exc}")
+            finally:
+                self._release_turn_capture()
+                if self.turn_by_turn:
+                    self.ui.status("Listening... your turn")
+                else:
+                    self.ui.status("Listening... speak naturally")
 
     def _ui_stats_loop(self) -> None:
         while not self.stop_event.is_set():
@@ -1688,6 +1332,575 @@ class Pipeline:
         )
 
 
+
+# -----------------------------
+# P2P local phone server
+# -----------------------------
+
+P2P_HTML = r"""
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#063f36">
+<title>BhashaSaathi • Conversation</title>
+<style>
+:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#153a35;background:#f5f3eb;--green:#073f36;--green2:#0b5a4d;--mint:#e6f1eb;--line:#d9dfd7;--cream:#f5f3eb;--ink:#153a35;--muted:#71817b;--gold:#b98b32;--danger:#a33d45}
+*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#f7f5ee 0%,#f2f1e9 100%);min-height:100vh;color:var(--ink)}
+.app{max-width:720px;margin:auto;min-height:100vh;padding-bottom:28px}.top{background:var(--green);color:#fff;padding:18px 18px 20px;border-radius:0 0 28px 28px;box-shadow:0 10px 28px #073f3622}.brand{display:flex;align-items:center;gap:12px}.logo{width:44px;height:44px;border-radius:13px;background:#f4ead6;color:var(--green);display:grid;place-items:center;font-weight:900;font-size:20px}.brand h1{margin:0;font-size:21px;letter-spacing:-.4px}.brand p{margin:2px 0 0;color:#c8ddd7;font-size:12px}.pill{margin-left:auto;border:1px solid #ffffff2c;background:#ffffff12;padding:7px 10px;border-radius:999px;font-size:11px;color:#dbe9e5}.content{padding:16px}.card{background:#fff;border:1px solid var(--line);border-radius:20px;padding:18px;margin:12px 0;box-shadow:0 7px 22px #163d3510}.eyebrow{font-size:11px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#73837d}.title{font-size:24px;font-weight:850;margin:5px 0 4px;letter-spacing:-.7px}.muted{color:var(--muted)}.small{font-size:12px;line-height:1.45}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.field label{display:block;font-size:12px;font-weight:750;margin:0 0 7px}.field select,.field input{width:100%;border:1px solid var(--line);background:#fbfbf8;color:var(--ink);border-radius:13px;padding:13px;font-size:15px;outline:none}.field input:focus,.field select:focus{border-color:#6da99b;box-shadow:0 0 0 3px #b8ddd533}button{border:0;border-radius:13px;padding:13px 15px;font-size:15px;font-weight:800;cursor:pointer;touch-action:manipulation}button.primary{background:var(--green);color:#fff}button.secondary{background:var(--mint);color:var(--green)}button.ghost{background:transparent;border:1px solid var(--line);color:var(--green)}button.danger{background:#f7e7e7;color:var(--danger)}button:disabled{opacity:.45;cursor:not-allowed}.actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.codeInput{margin-top:10px}.codeInput input{text-align:center;font-size:22px;font-weight:850;letter-spacing:5px}.hint{display:flex;gap:8px;align-items:flex-start;margin-top:12px;padding:11px 12px;background:#f7f8f4;border-radius:12px;color:#687872}.hint b{color:var(--ink)}.hidden{display:none!important}.roomHead{display:flex;justify-content:space-between;gap:12px;align-items:center}.online{display:inline-flex;align-items:center;gap:7px;background:#e7f4ed;color:#28654f;border-radius:999px;padding:7px 10px;font-size:11px;font-weight:800}.dot{width:7px;height:7px;border-radius:50%;background:#45a86f}.roomCode{font-size:31px;font-weight:900;letter-spacing:6px;margin-top:3px}.peer{font-size:13px;color:var(--muted);margin-top:5px}.langbar{display:grid;grid-template-columns:1fr auto 1fr;gap:9px;align-items:center}.langbox{padding:12px;border:1px solid var(--line);border-radius:14px;background:#fbfbf8}.langbox span{display:block;font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:800}.langbox b{display:block;margin-top:3px}.arrow{color:#6c817a;font-weight:900}.bubble{min-height:64px;border-radius:15px;background:#f7f8f4;border:1px solid #e5e9e2;padding:13px;font-size:18px;line-height:1.45;margin-top:7px}.bubble+ .label{margin-top:13px}.label{font-size:10px;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);font-weight:850}.status{background:var(--mint);color:var(--green);border-radius:13px;padding:12px;text-align:center;font-size:13px;font-weight:750}.ptt{display:block;width:176px;height:176px;margin:17px auto 13px;border-radius:50%;background:var(--green);color:#fff;border:9px solid #d5e8e1;box-shadow:0 12px 28px #073f3630;font-size:19px;line-height:1.2}.ptt:active,.ptt.recording{background:#a6404a;border-color:#f1d6d8;transform:scale(.985)}.footerNote{text-align:center;color:#89958f;font-size:11px;margin-top:14px}.spinner{display:inline-block;width:14px;height:14px;border:2px solid #ffffff66;border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-2px;margin-right:6px}@keyframes spin{to{transform:rotate(360deg)}}
+@media(max-width:480px){.content{padding:12px}.row{grid-template-columns:1fr}.actions{grid-template-columns:1fr}.title{font-size:22px}.ptt{width:162px;height:162px}.top{border-radius:0 0 22px 22px}}
+</style>
+</head>
+<body>
+<div class="app">
+<header class="top"><div class="brand"><div class="logo">भा</div><div><h1>BhashaSaathi</h1><p>Translate the classroom, not just the words.</p></div><div class="pill">LOCAL • P2P</div></div></header>
+<main class="content">
+<section id="setup" class="card">
+  <div class="eyebrow">Conversation</div><div class="title">Connect two devices</div>
+  <div class="muted small">Your laptop runs the AI. Phones only handle the microphone, conversation controls and audio.</div>
+  <div class="row" style="margin-top:15px"><div class="field"><label>Your language</label><select id="source"></select></div><div class="field"><label>I want to hear</label><select id="target"></select></div></div>
+  <div class="actions"><button id="create" class="primary">Create conversation</button><button id="join" class="secondary">Join conversation</button></div>
+  <div class="field codeInput"><label>6-digit conversation code</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000 000"></div>
+  <div class="hint"><span>●</span><span><b>How it works:</b> Device 1 creates a temporary room. Device 2 enters the code. Then only the device holding the mic button can speak.</span></div>
+  <div id="setupStatus" class="footerNote">Same Wi-Fi or laptop hotspot required.</div>
+</section>
+<section id="room" class="hidden">
+  <div class="card"><div class="roomHead"><div><div class="eyebrow">Conversation room</div><div id="roomCode" class="roomCode">000000</div><div id="peer" class="peer">Waiting for the other device…</div></div><div id="online" class="online"><span class="dot"></span><span id="onlineText">Connecting</span></div></div></div>
+  <div class="card"><div class="langbar"><div class="langbox"><span>You speak</span><b id="sourceBadge">English</b></div><div class="arrow">→</div><div class="langbox"><span>Other person hears</span><b id="targetBadge">Hindi</b></div></div></div>
+  <div class="card"><div class="label">You said</div><div id="heard" class="bubble">—</div><div class="label">Other person hears</div><div id="translated" class="bubble">—</div></div>
+  <div class="card center"><div id="state" class="status">Connecting…</div><button id="ptt" class="ptt">🎤<br>HOLD TO SPEAK</button><div class="muted small">Release to send. Your microphone is completely off when you are not holding the button.</div></div>
+  <div class="card"><button id="leave" class="danger" style="width:100%">Leave conversation</button></div>
+</section>
+<div class="footerNote">BhashaSaathi • temporary local session • no cloud required</div>
+</main></div>
+<script>
+const langs=%LANGS%;
+const $=id=>document.getElementById(id); const source=$("source"),target=$("target");
+langs.forEach(x=>{source.add(new Option(x,x));target.add(new Option(x,x));}); source.value="English";target.value="Hindi";
+let ws=null,roomCode=null,clientId=null,recording=false,turnRequested=false,processor=null,audioCtx=null,playCtx=null,sourceNode=null,muteNode=null,pcm=[],peerCount=0,phase="waiting",connecting=false,connectTimer=null;
+function setState(s){$("state").textContent=s}
+function setOnline(text,ok=true){$("onlineText").textContent=text;$("online").style.background=ok?"#e7f4ed":"#f7e7e7";$("online").style.color=ok?"#28654f":"#8f3940";$("online").querySelector(".dot").style.background=ok?"#45a86f":"#b85a60"}
+function setButtons(on){$("ptt").disabled=!on}
+function makeClientId(){try{if(window.crypto&&typeof window.crypto.randomUUID==="function")return window.crypto.randomUUID()}catch(e){} return "c_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,10)}
+function showSetupStatus(text){$("setupStatus").textContent=text}
+function stopConnectTimer(){if(connectTimer){clearTimeout(connectTimer);connectTimer=null}}
+function setPairButtons(busy){$("create").disabled=busy;$("join").disabled=busy}
+if(!window.isSecureContext){showSetupStatus("⚠ Open the HTTPS address shown by the laptop. Phone microphone access requires a secure context.")}
+async function connect(code){
+ if(connecting)return; connecting=true; setPairButtons(true); showSetupStatus("Connecting to laptop…");
+ clientId=makeClientId(); roomCode=code; setOnline("Connecting",true);
+ try{
+  const info=await fetch(`/api/rooms/${encodeURIComponent(code)}`,{cache:"no-store",headers:{"Cache-Control":"no-cache"}});
+  if(!info.ok)throw new Error("Laptop server did not answer the room check. Check the Wi-Fi address.");
+  const room=await info.json();
+  if(!room.exists)throw new Error("Room not found or expired. Create a new room on Device 1.");
+  if(room.clients>=2)throw new Error("This room already has two devices.");
+ }catch(err){connecting=false;setPairButtons(false);setOnline("Error",false);showSetupStatus(err.message);alert(err.message);return}
+ try{
+  const proto=location.protocol==="https:"?"wss":"ws";
+  ws=new WebSocket(`${proto}://${location.host}/ws/${encodeURIComponent(clientId)}`); ws.binaryType="arraybuffer";
+  connectTimer=setTimeout(()=>{if(connecting){try{ws&&ws.close()}catch(e){} connecting=false;setPairButtons(false);setOnline("Timeout",false);showSetupStatus("WebSocket join timed out. Check Windows Firewall and confirm both devices use the same Wi-Fi/hotspot.")}},8000);
+  ws.onopen=()=>{stopConnectTimer();setOnline("Socket connected",true);showSetupStatus("Connected to laptop — joining room…");ws.send(JSON.stringify({type:"join",code,source:source.value,target:target.value}));};
+  ws.onmessage=async e=>{if(typeof e.data!=="string")return;let m;try{m=JSON.parse(e.data)}catch(err){console.error("Bad server message",e.data);return}
+   if(m.type==="joined"){
+    stopConnectTimer();connecting=false;setPairButtons(false);$("setup").classList.add("hidden");$("room").classList.remove("hidden");$("roomCode").textContent=m.code;$("sourceBadge").textContent=source.value;$("targetBadge").textContent=target.value;setOnline((m.peer_count||1)>=2?"Paired":"Connected",true);setState((m.peer_count||1)>=2?"Ready — hold to speak":"Waiting for the other device…");
+   } else if(m.type==="peer"){
+    peerCount=m.count;$("peer").textContent=m.count>=2?"2 devices connected":"Waiting for the other device…";$("onlineText").textContent=m.count>=2?"Paired":"Waiting";
+   } else if(m.type==="status"){setState(m.text)}
+   else if(m.type==="heard"){$("heard").textContent=m.text}
+   else if(m.type==="translation"){$("translated").textContent=m.text}
+   else if(m.type==="audio"){
+    try{if(!playCtx)playCtx=new(window.AudioContext||window.webkitAudioContext)();await playCtx.resume();const b=Uint8Array.from(atob(m.data),c=>c.charCodeAt(0));const decoded=await playCtx.decodeAudioData(b.buffer.slice(0));const node=playCtx.createBufferSource();node.buffer=decoded;node.connect(playCtx.destination);node.onended=()=>{phase="idle";ws&&ws.send(JSON.stringify({type:"playback_finished"}));};node.start();phase="speaking";setButtons(false);setState("Speaking…")}catch(err){phase="idle";setState("Audio playback failed: "+err.message);ws&&ws.send(JSON.stringify({type:"playback_finished"}))}
+   }
+   else if(m.type==="turn"){
+    phase=m.phase||"idle";const mine=peerCount>=2&&m.client_id===clientId&&phase==="recording";setButtons(mine);
+    if(peerCount<2)setState("Waiting for the other device…");
+    else if(phase==="processing")setState("Translating and preparing voice…");
+    else if(phase==="speaking")setState(m.client_id===clientId?"Translation is playing on the other device…":"Playing translated voice…");
+    else setState(mine?"Your turn — recording…":"Ready — hold to speak");
+    if(mine && turnRequested && !recording){begin();}
+   }
+   else if(m.type==="error"){stopConnectTimer();connecting=false;setPairButtons(false);setOnline("Error",false);setState("Error: "+m.text);showSetupStatus(m.text);alert(m.text)}
+  };
+  ws.onerror=()=>{stopConnectTimer();connecting=false;setPairButtons(false);setOnline("Connection error",false);showSetupStatus("WebSocket failed. Check that both devices use the exact HTTPS address shown by the laptop and allow Python/Uvicorn through Windows Private-network firewall.");};
+  ws.onclose=()=>{stopConnectTimer();connecting=false;setPairButtons(false);setOnline("Disconnected",false);setState("Disconnected");setButtons(false)};
+ }catch(err){stopConnectTimer();connecting=false;setPairButtons(false);setOnline("Connection error",false);showSetupStatus(err.message);alert(err.message)}
+}
+$("create").onclick=async()=>{try{$("create").disabled=true;showSetupStatus("Creating temporary room…");const r=await fetch('/api/rooms',{method:'POST',cache:'no-store'});if(!r.ok)throw new Error("Could not create a room on the laptop.");const j=await r.json();$("code").value=j.code;await connect(j.code)}catch(err){showSetupStatus(err.message);alert(err.message)}finally{$("create").disabled=false}};
+$("join").onclick=async()=>{const c=$("code").value.replace(/\D/g,'');if(c.length!==6){showSetupStatus("Enter the 6-digit conversation code.");alert('Enter the 6-digit code');return}await connect(c)};
+$("code").addEventListener("input",e=>{e.target.value=e.target.value.replace(/\D/g,'').slice(0,6)});
+function requestTurn(){
+ if(!ws||ws.readyState!==1||peerCount<2||phase!=="idle"||turnRequested||recording)return;
+ turnRequested=true;setState("Requesting the turn…");ws.send(JSON.stringify({type:"turn_start"}));
+}
+async function begin(){if(!ws||ws.readyState!==1||peerCount<2||phase!=="recording"||!turnRequested||recording)return;
+ if(!window.isSecureContext||!navigator.mediaDevices||typeof navigator.mediaDevices.getUserMedia!=="function"){recording=false;turnRequested=false;setState("Microphone blocked — open the HTTPS BhashaSaathi address on the phone.");showSetupStatus("Phone microphone needs HTTPS. Use the HTTPS URL displayed by the laptop, then allow microphone permission.");ws.send(JSON.stringify({type:"turn_cancel"}));return;}
+ recording=true;pcm=[];setState("Recording… release to send");
+ try{if(!playCtx)playCtx=new(window.AudioContext||window.webkitAudioContext)();await playCtx.resume();audioCtx=new(window.AudioContext||window.webkitAudioContext)();await audioCtx.resume();const stream=await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}});sourceNode=audioCtx.createMediaStreamSource(stream);processor=audioCtx.createScriptProcessor(4096,1,1);processor.onaudioprocess=e=>{if(!recording)return;const input=e.inputBuffer.getChannelData(0),ratio=audioCtx.sampleRate/16000,n=Math.floor(input.length/ratio),out=new Int16Array(n);for(let i=0;i<n;i++){let x=input[Math.floor(i*ratio)];x=Math.max(-1,Math.min(1,x));out[i]=x<0?x*32768:x*32767}pcm.push(out.buffer)};muteNode=audioCtx.createGain();muteNode.gain.value=0;sourceNode.connect(processor);processor.connect(muteNode);muteNode.connect(audioCtx.destination);window._stream=stream;
+ }catch(err){recording=false;turnRequested=false;setState("Microphone error: "+err.message);showSetupStatus("Microphone access failed: "+(err&&err.message?err.message:"unknown browser error"));if(ws&&ws.readyState===1)ws.send(JSON.stringify({type:"turn_cancel"}))}}
+async function end(){
+ if(!recording){if(turnRequested&&ws&&ws.readyState===1){turnRequested=false;ws.send(JSON.stringify({type:"turn_cancel"}));setState("Turn cancelled")}return;}
+ recording=false;turnRequested=false;if(processor){processor.disconnect();processor=null}if(sourceNode){sourceNode.disconnect();sourceNode=null}if(muteNode){muteNode.disconnect();muteNode=null}if(window._stream){window._stream.getTracks().forEach(t=>t.stop());window._stream=null}if(audioCtx){await audioCtx.close();audioCtx=null}setState("Processing…");ws.send(JSON.stringify({type:"audio_begin",sample_rate:16000}));for(const b of pcm)ws.send(b);ws.send(JSON.stringify({type:"audio_end"}));pcm=[]}
+const ptt=$("ptt");ptt.onpointerdown=e=>{e.preventDefault();try{ptt.setPointerCapture(e.pointerId)}catch(_e){}if(!ptt.disabled){ptt.classList.add("recording");requestTurn()}};ptt.onpointerup=e=>{e.preventDefault();try{ptt.releasePointerCapture(e.pointerId)}catch(_e){}ptt.classList.remove("recording");end()};ptt.onpointercancel=e=>{try{ptt.releasePointerCapture(e.pointerId)}catch(_e){}ptt.classList.remove("recording");end()};
+$("leave").onclick=()=>{try{ws&&ws.close()}catch(e){}try{playCtx&&playCtx.close()}catch(e){}location.reload()};setButtons(false);
+</script></body></html>
+"""
+
+
+def ensure_p2p_tls_certificate(host_ip: str) -> tuple[Path, Path]:
+    """Create a small self-signed certificate for the laptop LAN IP.
+
+    Phone microphone access from getUserMedia() requires a secure context. A local
+    HTTPS certificate keeps the demo entirely on the LAN. The browser may show a
+    one-time certificate warning because the certificate is self-signed.
+    """
+    if not P2P_HTTPS:
+        raise RuntimeError("P2P HTTPS is disabled by BHASHA_P2P_HTTPS=0.")
+    if P2P_CERT_FILE.exists() and P2P_KEY_FILE.exists():
+        return P2P_CERT_FILE, P2P_KEY_FILE
+    try:
+        from datetime import datetime, timedelta, timezone
+        import ipaddress
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+    except Exception as exc:
+        raise RuntimeError(
+            "P2P phone microphone mode needs local HTTPS. Install the certificate helper with:\n"
+            "pip install cryptography"
+        ) from exc
+
+    P2P_TLS_DIR.mkdir(parents=True, exist_ok=True)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "IN"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "BhashaSaathi Local"),
+        x509.NameAttribute(NameOID.COMMON_NAME, host_ip),
+    ])
+    san_values = [x509.DNSName("localhost"), x509.IPAddress(ipaddress.ip_address(host_ip))]
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=30))
+        .add_extension(x509.SubjectAlternativeName(san_values), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+    P2P_KEY_FILE.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+    P2P_CERT_FILE.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return P2P_CERT_FILE, P2P_KEY_FILE
+
+
+class P2PRoom:
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.created_at = time.time()
+        self.last_activity = time.time()
+        self.clients: dict[str, Any] = {}
+        self.meta: dict[str, dict[str, str]] = {}
+        self.current_speaker: Optional[str] = None
+        self.phase: str = "idle"
+        self.lock = threading.RLock()
+
+    def touch(self) -> None:
+        self.last_activity = time.time()
+
+
+class P2PServer:
+    """Local-only conversation broker.
+
+    Phones are lightweight browser clients. The laptop owns the temporary room,
+    turn lock, STT, IndicTrans2 and Parler-TTS. Only translated text/audio is
+    routed to the other client; raw microphone audio is never broadcast.
+    """
+    def __init__(self, ui: "UIBridge") -> None:
+        self.ui = ui
+        self.rooms: dict[str, P2PRoom] = {}
+        self.client_rooms: dict[str, str] = {}
+        self.lock = threading.RLock()
+        self.app = FastAPI(title="BhashaSaathi Local P2P") if FASTAPI_AVAILABLE else None
+        self.thread: Optional[threading.Thread] = None
+        self.server = None
+        self.started = False
+        self.host_ip = self._detect_lan_ip()
+        self.whisper = WhisperEngine(STT_DIR, ui)
+        self.tts = ParlerTTSEngine(ui, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER)
+        self.translation_models: dict[str, tuple[Any, Any]] = {}
+        self.translation_lock = threading.Lock()
+        self.ai_lock = threading.Lock()
+        if self.app is not None:
+            self._routes()
+
+    @staticmethod
+    def _detect_lan_ip() -> str:
+        # Prefer a real private LAN address. This also works when the laptop
+        # hotspot has no internet route, where the usual UDP-to-8.8.8.8 trick
+        # can otherwise return 127.0.0.1 or fail.
+        candidates: list[str] = []
+        try:
+            infos = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_STREAM)
+            candidates.extend(addr[4][0] for addr in infos)
+        except Exception:
+            pass
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.connect(("8.8.8.8", 80))
+            candidates.insert(0, sock.getsockname()[0])
+            sock.close()
+        except Exception:
+            pass
+        def is_private(ip: str) -> bool:
+            try:
+                first, second = [int(x) for x in ip.split(".")[:2]]
+                return first == 10 or (first == 172 and 16 <= second <= 31) or (first == 192 and second == 168)
+            except Exception:
+                return False
+        for ip in candidates:
+            if is_private(ip):
+                return ip
+        return next((ip for ip in candidates if ip and not ip.startswith("127.")), "127.0.0.1")
+
+    def url(self) -> str:
+        scheme = "https" if P2P_HTTPS else "http"
+        return f"{scheme}://{self.host_ip}:{P2P_PORT}"
+
+    def _routes(self) -> None:
+        app = self.app
+        assert app is not None
+
+        @app.get("/", response_class=HTMLResponse)
+        async def index() -> str:
+            return HTMLResponse(P2P_HTML.replace("%LANGS%", json.dumps(LANGUAGE_NAMES)))
+
+        @app.post("/api/rooms")
+        async def create_room() -> dict[str, Any]:
+            with self.lock:
+                self._cleanup_rooms()
+                for _ in range(20):
+                    code = f"{secrets.randbelow(1_000_000):06d}"
+                    if code not in self.rooms:
+                        self.rooms[code] = P2PRoom(code)
+                        break
+                else:
+                    raise RuntimeError("Could not allocate a temporary room code")
+            self.ui.status(f"P2P room created: {code}")
+            return {"code": code, "expires_in": P2P_ROOM_TTL_S, "url": self.url(), "secure": P2P_HTTPS}
+
+        @app.get("/api/rooms/{code}")
+        async def room_info(code: str) -> dict[str, Any]:
+            with self.lock:
+                room = self.rooms.get(code)
+                if room is None:
+                    return {"exists": False}
+                return {
+                    "exists": True,
+                    "clients": len(room.clients),
+                    "phase": room.phase,
+                    "capacity": 2,
+                    "secure": P2P_HTTPS,
+                }
+
+        @app.websocket("/ws/{client_id}")
+        async def websocket_endpoint(websocket: WebSocket, client_id: str) -> None:
+            await websocket.accept()
+            import asyncio
+            websocket._bhasha_loop = asyncio.get_running_loop()
+            try:
+                first = await websocket.receive_text()
+                hello = json.loads(first)
+                if hello.get("type") != "join":
+                    await websocket.send_json({"type": "error", "text": "First message must join a room."})
+                    await websocket.close()
+                    return
+                code = str(hello.get("code", "")).strip()
+                source = str(hello.get("source", "English"))
+                target = str(hello.get("target", "Hindi"))
+                if source not in LANGUAGES or target not in LANGUAGES:
+                    await websocket.send_json({"type": "error", "text": "Invalid language selection."})
+                    await websocket.close()
+                    return
+                with self.lock:
+                    room = self.rooms.get(code)
+                    if room is None:
+                        await websocket.send_json({"type": "error", "text": "Room not found or expired. Create a new room on Device 1."})
+                        await websocket.close()
+                        return
+                    if client_id in self.client_rooms:
+                        await websocket.send_json({"type": "error", "text": "This browser session is already connected. Refresh the page and try again."})
+                        await websocket.close()
+                        return
+                    if len(room.clients) >= 2:
+                        await websocket.send_json({"type": "error", "text": "This room already has two connected devices."})
+                        await websocket.close()
+                        return
+                    room.clients[client_id] = websocket
+                    room.meta[client_id] = {"source": source, "target": target}
+                    room.touch()
+                    self.client_rooms[client_id] = code
+                self.ui.status(f"P2P client joined room {code[:6]} ({len(room.clients)}/2)")
+                await websocket.send_json({"type": "joined", "code": code, "client_id": client_id, "peer_count": len(room.clients)})
+                await self._broadcast_peer(room)
+                await self._broadcast_turn(room)
+                recording_parts: list[bytes] = []
+                recording = False
+                while True:
+                    msg = await websocket.receive()
+                    if "text" in msg and msg["text"] is not None:
+                        data = json.loads(msg["text"])
+                        typ = data.get("type")
+                        room.touch()
+                        if typ == "turn_start":
+                            granted = False
+                            busy = False
+                            with room.lock:
+                                if room.current_speaker is None and room.phase == "idle":
+                                    room.current_speaker = client_id
+                                    room.phase = "recording"
+                                    granted = True
+                                elif room.current_speaker != client_id:
+                                    busy = True
+                            if granted:
+                                await self._broadcast_turn(room)
+                            elif busy:
+                                await websocket.send_json({"type": "status", "text": "Other device is speaking."})
+                        elif typ == "turn_cancel":
+                            changed = False
+                            with room.lock:
+                                if room.current_speaker == client_id:
+                                    room.current_speaker = None
+                                    room.phase = "idle"
+                                    changed = True
+                            if changed:
+                                await self._broadcast_turn(room)
+                        elif typ == "audio_begin":
+                            recording_parts = []
+                            recording = True
+                        elif typ == "audio_end":
+                            if recording:
+                                recording = False
+                                raw = b"".join(recording_parts)
+                                recording_parts = []
+                                with room.lock:
+                                    room.phase = "processing"
+                                await self._broadcast_turn(room)
+                                threading.Thread(
+                                    target=self._process_audio,
+                                    args=(room, client_id, raw),
+                                    name=f"p2p-ai-{client_id[:6]}",
+                                    daemon=True,
+                                ).start()
+                        elif typ == "playback_finished":
+                            changed = False
+                            with room.lock:
+                                if room.current_speaker is not None and room.phase == "speaking":
+                                    room.current_speaker = None
+                                    room.phase = "idle"
+                                    changed = True
+                            if changed:
+                                await self._broadcast_turn(room)
+                    elif "bytes" in msg and msg["bytes"] is not None and recording:
+                        chunk = msg["bytes"]
+                        if len(b"".join(recording_parts)) < AUDIO_RATE * 2 * P2P_MAX_RECORDING_S:
+                            recording_parts.append(chunk)
+            except WebSocketDisconnect:
+                pass
+            except Exception as exc:
+                self.ui.warning(f"P2P client error: {exc}")
+            finally:
+                with self.lock:
+                    code = self.client_rooms.pop(client_id, None)
+                    room = self.rooms.get(code) if code else None
+                    if room is not None:
+                        room.clients.pop(client_id, None)
+                        room.meta.pop(client_id, None)
+                        if room.current_speaker == client_id:
+                            room.current_speaker = None
+                            room.phase = "idle"
+                        room.touch()
+                        if not room.clients:
+                            self.rooms.pop(room.code, None)
+                if room is not None:
+                    try:
+                        await self._broadcast_peer(room)
+                        await self._broadcast_turn(room)
+                    except Exception:
+                        pass
+
+    def _cleanup_rooms(self) -> None:
+        now = time.time()
+        dead = [c for c, r in self.rooms.items() if now - r.last_activity > P2P_ROOM_TTL_S and not r.clients]
+        for code in dead:
+            self.rooms.pop(code, None)
+
+    async def _broadcast_peer(self, room: P2PRoom) -> None:
+        payload = {"type": "peer", "count": len(room.clients)}
+        for ws in list(room.clients.values()):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                pass
+
+    async def _broadcast_turn(self, room: P2PRoom) -> None:
+        payload = {"type": "turn", "client_id": room.current_speaker or "", "phase": room.phase}
+        for ws in list(room.clients.values()):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                pass
+
+    def _send_threadsafe(self, ws: Any, payload: dict[str, Any]) -> None:
+        # FastAPI websocket objects are tied to the event-loop task, so AI work
+        # sends are scheduled back onto the loop through the socket's send call
+        # by using a dedicated async bridge created at connection time.
+        # In practice the process worker below uses the client's running loop
+        # captured in the connection metadata.
+        loop = getattr(ws, "_bhasha_loop", None)
+        if loop is None:
+            return
+        import asyncio
+        asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+
+    def _process_audio(self, room: P2PRoom, sender_id: str, raw: bytes) -> None:
+        receiver_id = None
+        with room.lock:
+            if room.current_speaker != sender_id:
+                return
+            others = [cid for cid in room.clients if cid != sender_id]
+            receiver_id = others[0] if others else None
+            if receiver_id is None:
+                self._release_turn(room)
+                return
+            sender_meta = room.meta[sender_id]
+            receiver_meta = room.meta[receiver_id]
+            receiver_ws = room.clients.get(receiver_id)
+            sender_ws = room.clients.get(sender_id)
+        if receiver_ws is None:
+            self._release_turn(room)
+            return
+        self._send_threadsafe(sender_ws, {"type": "status", "text": "Processing speech…"})
+        self._send_threadsafe(receiver_ws, {"type": "status", "text": "Receiving translation…"})
+        try:
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            if audio.size < int(AUDIO_RATE * 0.15):
+                raise ValueError("Recording was too short")
+            src = LANGUAGES[sender_meta["source"]]
+            tgt = LANGUAGES[receiver_meta["target"]]
+            with self.ai_lock:
+                self._send_threadsafe(sender_ws, {"type": "status", "text": "Transcribing…"})
+                transcript, detected, prob, stt_time = self.whisper.transcribe(audio, src.whisper_code)
+                if not transcript.strip():
+                    raise ValueError("Speech was detected but no text was transcribed")
+                self._send_threadsafe(sender_ws, {"type": "heard", "text": transcript})
+                self._send_threadsafe(sender_ws, {"type": "status", "text": "Translating…"})
+                translated, trans_time = self._translate_dynamic(transcript, src, tgt)
+                self._send_threadsafe(receiver_ws, {"type": "translation", "text": translated})
+                self._send_threadsafe(receiver_ws, {"type": "status", "text": "Generating voice…"})
+                audio_out, rate, tts_time = self.tts.synthesize(translated, tgt.name)
+            if audio_out.size == 0:
+                raise ValueError("TTS returned empty audio")
+            buf = io.BytesIO()
+            sf.write(buf, audio_out, rate, format="WAV", subtype="PCM_16")
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            with room.lock:
+                room.phase = "speaking"
+            self._release_broadcast_turn(room)
+            self._send_threadsafe(receiver_ws, {"type": "audio", "data": encoded})
+            self._send_threadsafe(sender_ws, {"type": "status", "text": f"Done • STT {stt_time:.2f}s • TXT {trans_time:.2f}s • TTS {tts_time:.2f}s"})
+            self._send_threadsafe(receiver_ws, {"type": "status", "text": "Speaking…"})
+        except Exception as exc:
+            self._send_threadsafe(sender_ws, {"type": "error", "text": f"Pipeline failed: {exc}"})
+            self._send_threadsafe(receiver_ws, {"type": "error", "text": f"Pipeline failed: {exc}"})
+            self._release_turn(room)
+
+    def _translate_dynamic(self, text: str, source: Language, target: Language) -> tuple[str, float]:
+        if source.name == target.name:
+            return text, 0.0
+        route = "en-indic" if source.name == "English" else "indic-en" if target.name == "English" else "indic-indic"
+        with self.translation_lock:
+            if route not in self.translation_models:
+                route_dir = {"en-indic": EN_INDIC_DIR, "indic-en": INDIC_EN_DIR, "indic-indic": INDIC_INDIC_DIR}[route]
+                self.ui.status(f"P2P loading translation route: {route}")
+                tok = AutoTokenizer.from_pretrained(str(route_dir), trust_remote_code=True, local_files_only=True)
+                kwargs: dict[str, Any] = {"trust_remote_code": True, "local_files_only": True}
+                if choose_compute_device() == "cuda":
+                    kwargs["torch_dtype"] = device_dtype("cuda")
+                model = AutoModelForSeq2SeqLM.from_pretrained(str(route_dir), **kwargs).to(choose_compute_device())
+                model.eval()
+                self.translation_models[route] = (tok, model)
+            tokenizer, model = self.translation_models[route]
+        started = time.perf_counter()
+        processor = IndicProcessor(inference=True)
+        processed = processor.preprocess_batch([text], src_lang=source.indic_code, tgt_lang=target.indic_code)
+        inputs = tokenizer(processed, truncation=True, padding="longest", return_tensors="pt", return_attention_mask=True).to(next(model.parameters()).device)
+        with torch.inference_mode():
+            generated = model.generate(**inputs, use_cache=True, min_length=0, max_length=MAX_TRANSLATION_LENGTH, num_beams=NUM_BEAMS, num_return_sequences=1)
+        decoded = tokenizer.batch_decode(generated, skip_special_tokens=True, clean_up_tokenization_spaces=True)
+        result = processor.postprocess_batch(decoded, lang=target.indic_code)[0].strip()
+        return result, max(time.perf_counter() - started, 0.0)
+
+    def _release_broadcast_turn(self, room: P2PRoom) -> None:
+        import asyncio
+        payload = {"type": "turn", "client_id": room.current_speaker or "", "phase": room.phase}
+        for ws in list(room.clients.values()):
+            loop = getattr(ws, "_bhasha_loop", None)
+            if loop:
+                asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+
+    def _release_turn(self, room: P2PRoom) -> None:
+        with room.lock:
+            room.current_speaker = None
+            room.phase = "idle"
+        import asyncio
+        for ws in list(room.clients.values()):
+            loop = getattr(ws, "_bhasha_loop", None)
+            if loop:
+                asyncio.run_coroutine_threadsafe(self._broadcast_turn(room), loop)
+
+    def start(self) -> None:
+        if self.started:
+            return
+        if not FASTAPI_AVAILABLE:
+            raise RuntimeError("P2P mode requires fastapi and uvicorn. Install with: pip install fastapi uvicorn")
+        if P2P_HTTPS:
+            ensure_p2p_tls_certificate(self.host_ip)
+        self.started = True
+        def runner() -> None:
+            kwargs: dict[str, Any] = {
+                "app": self.app,
+                "host": P2P_HOST,
+                "port": P2P_PORT,
+                "log_level": "info",
+            }
+            if P2P_HTTPS:
+                kwargs.update(
+                    ssl_keyfile=str(P2P_KEY_FILE),
+                    ssl_certfile=str(P2P_CERT_FILE),
+                )
+            config = uvicorn.Config(**kwargs)
+            self.server = uvicorn.Server(config)
+            self.server.run()
+        self.thread = threading.Thread(target=runner, name="bhasha-p2p-server", daemon=True)
+        self.thread.start()
+        time.sleep(0.8)
+        self.ui.status(f"P2P server ready: {self.url()}")
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.should_exit = True
+        self.started = False
+
+
 # -----------------------------
 # UI bridge
 # -----------------------------
@@ -1699,21 +1912,23 @@ class UIBridge:
         self.root = root
         self.events: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._pipeline: Optional[Pipeline] = None
+        self.p2p_server: Optional[P2PServer] = None
         self.running = False
 
         self.source_var = tk.StringVar(value="Hindi")
         self.target_var = tk.StringVar(value="English")
         self.input_var = tk.StringVar()
         self.output_var = tk.StringVar()
-        self.output_device_map: dict[str, Any] = {}
         self.status_var = tk.StringVar(value="Ready")
         self.latency_var = tk.StringVar(value="—")
-        self.queue_var = tk.StringVar(value="STT 0  •  TXT 0  •  TTS 0")
+        self.queue_var = tk.StringVar(value="STT 0  •  TXT 0  •  TTS 0  •  OUT 0")
         self.sequence_var = tk.StringVar(value="—")
         self.device_var = tk.StringVar(value="CPU")
+        self.conversation_mode_var = tk.StringVar(value=LOCAL_CONVERSATION_MODES[0])
 
         self.transcript_text = tk.StringVar(value="Waiting for speech...")
         self.translation_text = tk.StringVar(value="Waiting for translation...")
+        self._history_limit = 100
 
         self._build()
         self.root.after(100, self._poll_events)
@@ -1773,12 +1988,31 @@ class UIBridge:
             controls,
             text=(
                 "Recommended demo wiring: laptop/external mic as INPUT + wired/Bluetooth earphones as OUTPUT. "
-                "Do not use the earbud microphone. TTS on Windows uses native WAV playback to avoid WASAPI blocking-mode conflicts."
+                "Do not use the earbud microphone. Mute laptop speakers to avoid feedback. "
+                "P2P Phone Mode hosts a temporary local website on this laptop."
             ),
             style="Muted.TLabel",
             wraplength=980,
         )
         hint.pack(fill="x", pady=(12, 0))
+
+        timing = ttk.Frame(controls, style="Card.TFrame")
+        timing.pack(fill="x", pady=(10, 0))
+        ttk.Label(timing, text="SPEECH MODE", style="Muted.TLabel").pack(side="left")
+        self.conversation_mode_combo = ttk.Combobox(
+            timing,
+            textvariable=self.conversation_mode_var,
+            values=list(LOCAL_CONVERSATION_MODES),
+            state="readonly",
+            width=29,
+        )
+        self.conversation_mode_combo.pack(side="left", padx=(12, 0))
+        ttk.Label(
+            timing,
+            text="Turn-by-turn: press Finish Turn or wait for silence, then STT → translation → TTS. "
+                 "Continuous: keep listening and queue utterances automatically.",
+            style="Muted.TLabel",
+        ).pack(side="left", padx=12)
 
         action = ttk.Frame(outer)
         action.pack(fill="x", pady=(0, 14))
@@ -1786,9 +2020,16 @@ class UIBridge:
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(action, text="■  STOP", command=self.stop, state="disabled")
         self.stop_btn.pack(side="left", padx=10)
+        self.finish_turn_btn = ttk.Button(
+            action,
+            text="✓  FINISH TURN • TRANSLATE NOW",
+            command=self.finish_turn,
+            state="disabled",
+        )
+        self.finish_turn_btn.pack(side="left", padx=10)
         ttk.Button(action, text="↻  Refresh Devices", command=self.refresh_devices).pack(side="left")
-        ttk.Button(action, text="Test TTS", command=self.test_tts).pack(side="right", padx=8)
         ttk.Button(action, text="Test Output", command=self.test_output).pack(side="right")
+        ttk.Button(action, text="📱  START P2P PHONE MODE", command=self.start_p2p).pack(side="right", padx=10)
 
         status_bar = ttk.Frame(outer, style="Card.TFrame", padding=(16, 12))
         status_bar.pack(fill="x", pady=(0, 14))
@@ -1805,19 +2046,21 @@ class UIBridge:
         center.columnconfigure(1, weight=1)
         center.rowconfigure(0, weight=1)
 
-        self._big_card(
+        self._history_card(
             center,
             "WHAT WAS HEARD",
-            "Microphone → Whisper STT",
+            "Every utterance from the beginning • newest stays visible at the bottom",
             self.transcript_text,
             0,
+            "transcript_history",
         )
-        self._big_card(
+        self._history_card(
             center,
             "WHAT THE OTHER PERSON HEARS",
-            "IndicTrans2 → Parler-TTS",
+            "Every translation from the beginning • each queued utterance is spoken in order",
             self.translation_text,
             1,
+            "translation_history",
         )
 
         bottom = ttk.Frame(outer, style="Card.TFrame", padding=(16, 12))
@@ -1825,13 +2068,13 @@ class UIBridge:
         ttk.Label(bottom, text="Pipeline", style="CardTitle.TLabel").pack(side="left")
         ttk.Label(
             bottom,
-            text="Mic → VAD → live chunks → STT → Translation → streaming TTS → Earphones",
+            text="Mic → VAD → FIFO STT → FIFO Translation → FIFO TTS → Ordered Playback",
             style="Muted.TLabel",
         ).pack(side="left", padx=15)
         ttk.Label(bottom, textvariable=self.sequence_var, style="Muted.TLabel").pack(side="right")
 
         self.refresh_devices(initial=True)
-        self.device_var.set(f"Model compute: {choose_compute_device().upper()}")
+        self.device_var.set(f"STT/TXT: {choose_compute_device().upper()}  •  TTS: {ParlerTTSEngine._choose_tts_device().upper()}")
 
     def _field(self, parent: ttk.Frame, label: str, variable: tk.StringVar, col: int) -> None:
         box = ttk.Frame(parent, style="Card.TFrame")
@@ -1863,21 +2106,64 @@ class UIBridge:
         else:
             self.output_combo = combo
 
-    def _big_card(
+    def _history_card(
         self,
         parent: ttk.Frame,
         title: str,
         subtitle: str,
-        variable: tk.StringVar,
+        latest_var: tk.StringVar,
         col: int,
+        history_attr: str,
     ) -> None:
-        card = ttk.Frame(parent, style="Card.TFrame", padding=20)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=16)
         card.grid(row=0, column=col, padx=(0, 7) if col == 0 else (7, 0), sticky="nsew")
+        parent.rowconfigure(0, weight=1)
         ttk.Label(card, text=title, style="Muted.TLabel").pack(anchor="w")
-        ttk.Label(card, text=subtitle, style="Muted.TLabel").pack(anchor="w", pady=(4, 14))
-        ttk.Label(card, textvariable=variable, style="Big.TLabel", wraplength=470, justify="left").pack(
-            anchor="nw", fill="both", expand=True
+        ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=480).pack(anchor="w", pady=(4, 9))
+
+        latest_frame = ttk.Frame(card, style="Card.TFrame")
+        latest_frame.pack(fill="x", pady=(0, 10))
+        ttk.Label(latest_frame, text="LATEST", style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(
+            latest_frame,
+            textvariable=latest_var,
+            style="Big.TLabel",
+            wraplength=500,
+            justify="left",
+        ).pack(anchor="w", fill="x", pady=(4, 0))
+
+        history_frame = tk.Frame(card, bg="#0d1427", highlightthickness=1, highlightbackground="#26314d")
+        history_frame.pack(fill="both", expand=True)
+        history = tk.Text(
+            history_frame,
+            bg="#0d1427",
+            fg="#eef3ff",
+            insertbackground="#eef3ff",
+            relief="flat",
+            borderwidth=0,
+            wrap="word",
+            font=("Segoe UI", 11),
+            padx=12,
+            pady=10,
+            state="disabled",
+            cursor="arrow",
         )
+        scrollbar = ttk.Scrollbar(history_frame, orient="vertical", command=history.yview)
+        history.configure(yscrollcommand=scrollbar.set)
+        history.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        setattr(self, history_attr, history)
+
+    def _append_history(self, widget: tk.Text, entry: str) -> None:
+        widget.configure(state="normal")
+        widget.insert("end", entry.rstrip() + "\n\n")
+        # Keep the widget bounded while retaining a useful full conversation history.
+        lines = int(widget.index("end-1c").split(".")[0])
+        max_lines = self._history_limit * 5
+        if lines > max_lines:
+            widget.delete("1.0", f"{lines - max_lines}.0")
+        widget.configure(state="disabled")
+        widget.see("end")
 
     # ---- UI event methods ----
 
@@ -1908,9 +2194,6 @@ class UIBridge:
     def ready_for_playback(self, seq: int, latency: float) -> None:
         self.events.put(("ready", (seq, latency)))
 
-    def first_audio(self, seq: int, delay: float) -> None:
-        self.events.put(("first_audio", (seq, delay)))
-
     def played(self, seq: int) -> None:
         self.events.put(("played", seq))
 
@@ -1935,37 +2218,41 @@ class UIBridge:
                     self.running = True
                     self.start_btn.configure(state="disabled")
                     self.stop_btn.configure(state="normal")
+                    self.conversation_mode_combo.configure(state="disabled")
+                    turn_mode = self._pipeline is not None and self._pipeline.turn_by_turn
+                    self.finish_turn_btn.configure(state="normal" if turn_mode else "disabled")
                 elif event == "stopped":
                     self.running = False
                     self.start_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
+                    self.conversation_mode_combo.configure(state="readonly")
+                    self.finish_turn_btn.configure(state="disabled")
                     self.status_var.set("Stopped")
                 elif event == "segment":
                     self.sequence_var.set(f"Segment #{payload}")
                 elif event == "transcript":
                     seq, text, detected, prob = payload
-                    detail = f"\n\nWhisper: {detected or 'auto'} ({prob:.0%})"
-                    self.transcript_text.set(text + detail)
+                    detail = f"# {seq}   •   Whisper {detected or 'auto'} ({prob:.0%})\n{text}"
+                    self.transcript_text.set(text)
+                    self._append_history(self.transcript_history, detail)
                     self.sequence_var.set(f"Segment #{seq}")
                 elif event == "translation":
                     seq, text = payload
+                    detail = f"# {seq}\n{text}"
                     self.translation_text.set(text)
+                    self._append_history(self.translation_history, detail)
                     self.sequence_var.set(f"Segment #{seq}")
                 elif event == "ready":
                     seq, latency = payload
                     self.latency_var.set(f"{latency:.2f}s")
                     self.sequence_var.set(f"Segment #{seq} ready → FIFO playback")
-                elif event == "first_audio":
-                    seq, delay = payload
-                    self.latency_var.set(f"first audio {delay:.2f}s")
-                    self.sequence_var.set(f"Segment #{seq}: first audio playing")
                 elif event == "played":
                     self.sequence_var.set(f"Segment #{payload} played")
                 elif event == "metrics":
                     v = payload
                     self.queue_var.set(
                         f"STT {v['segment_q']} • TXT {v['stt_q']} • "
-                        f"TTS {v['translation_q']} • PLAY live"
+                        f"TTS {v['translation_q']} • OUT {v['tts_q']}"
                     )
                     if v.get("latency") is not None:
                         self.latency_var.set(f"{float(v['latency']):.2f}s")
@@ -1985,17 +2272,31 @@ class UIBridge:
             messagebox.showerror(APP_NAME, "Select valid source and target languages.")
             return
         input_index = find_device_index(input_label)
-        output_device = self._select_output_object(output_label)
-        if input_index is None or output_device is None:
+        output_index = find_device_index(output_label)
+        if input_index is None or output_index is None:
             messagebox.showerror(APP_NAME, "Select both a microphone input and earphones output.")
             return
+
+        if input_index == output_index:
+            answer = messagebox.askyesno(
+                APP_NAME,
+                "Input and output are the same physical device. This can cause feedback. Continue?",
+            )
+            if not answer:
+                return
 
         source = LANGUAGES[source_name]
         target = LANGUAGES[target_name]
         self.transcript_text.set("Listening for speech...")
         self.translation_text.set("Translation will appear here...")
+        for history in (self.transcript_history, self.translation_history):
+            history.configure(state="normal")
+            history.delete("1.0", "end")
+            history.configure(state="disabled")
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
+        self.conversation_mode_combo.configure(state="disabled")
+        self.finish_turn_btn.configure(state="disabled")
         self.status_var.set("Starting...")
 
         self._pipeline = Pipeline(
@@ -2003,9 +2304,35 @@ class UIBridge:
             source=source,
             target=target,
             input_device=input_index,
-            output_device=output_device,
+            output_device=output_index,
+            turn_by_turn=self.conversation_mode_var.get().startswith("Turn-by-turn"),
         )
         self._pipeline.start()
+
+    def start_p2p(self) -> None:
+        if self.p2p_server is None:
+            self.p2p_server = P2PServer(self)
+        try:
+            self.p2p_server.start()
+            url = self.p2p_server.url()
+            self.status_var.set(f"P2P server: {url}")
+            security_note = (
+                "\n\nPhone microphone note: this demo uses local HTTPS so mobile browsers can request mic permission. "
+                "The first visit may show a self-signed certificate warning; choose Advanced/Proceed for this local demo."
+                if P2P_HTTPS else
+                "\n\nWarning: HTTP is not suitable for phone microphone access in most modern browsers. Set BHASHA_P2P_HTTPS=1 (default)."
+            )
+            messagebox.showinfo(
+                APP_NAME,
+                "P2P Phone Mode is running.\n\n"
+                f"On Phone 1 and Phone 2, connect to the same Wi-Fi/hotspot and open:\n\n{url}\n\n"
+                "Phone 1: Create Conversation.\n"
+                "Phone 2: enter the 6-digit code and Join.\n\n"
+                "Hold the microphone button to speak; release it to translate and play the other language."
+                + security_note,
+            )
+        except Exception as exc:
+            self._show_error(str(exc))
 
     def stop(self) -> None:
         if self._pipeline is not None:
@@ -2014,6 +2341,23 @@ class UIBridge:
             threading.Thread(target=pipeline.stop, name="pipeline-stop", daemon=True).start()
         else:
             self.stopped()
+
+    def finish_turn(self) -> None:
+        if not self.running or self._pipeline is None:
+            return
+        if not self._pipeline.turn_by_turn:
+            return
+        self.finish_turn_btn.configure(state="disabled")
+        try:
+            self._pipeline.finish_turn()
+        finally:
+            # Re-enable shortly after the segmenter has received the request; the
+            # playback lock is handled by the pipeline itself.
+            self.root.after(250, self._refresh_finish_turn_button)
+
+    def _refresh_finish_turn_button(self) -> None:
+        if self.running and self._pipeline is not None and self._pipeline.turn_by_turn:
+            self.finish_turn_btn.configure(state="normal")
 
     def swap_languages(self) -> None:
         if self.running or (self._pipeline is not None and self._pipeline.starting):
@@ -2024,69 +2368,28 @@ class UIBridge:
         self.source_var.set(b)
         self.target_var.set(a)
 
-    def _select_output_object(self, label: str):
-        if label in self.output_device_map:
-            return self.output_device_map[label]
-        idx = find_device_index(label)
-        return idx
-
     def refresh_devices(self, initial: bool = False) -> None:
         try:
-            inputs, portaudio_outputs = list_audio_devices()
+            inputs, outputs = list_audio_devices()
         except Exception as exc:
             self.status_var.set(f"Audio devices unavailable: {exc}")
             return
 
         in_values = [label for _, label in inputs]
-
-        # IMPORTANT: when SoundCard is installed, show actual WASAPI speakers in
-        # the UI and pass that exact object into TTS. Do not map through PortAudio.
-        self.output_device_map = {}
-        sc_choices = _soundcard_speaker_choices()
-        if sc_choices:
-            out_values = [label for label, _speaker in sc_choices]
-            self.output_device_map = {label: speaker for label, speaker in sc_choices}
-            # Prefer the Windows default speaker by name, otherwise first physical speaker.
-            try:
-                default_sc = sc.default_speaker()
-                default_name = str(getattr(default_sc, "name", ""))
-                preferred = next(
-                    (label for label, speaker in sc_choices
-                     if _normalize_device_name(getattr(speaker, "name", "")) == _normalize_device_name(default_name)),
-                    out_values[0] if out_values else "",
-                )
-            except Exception:
-                preferred = out_values[0] if out_values else ""
-        else:
-            out_values = [label for _, label in portaudio_outputs]
-
+        out_values = [label for _, label in outputs]
         self.input_combo["values"] = in_values
         self.output_combo["values"] = out_values
 
-        def first_matching(values: list[str], predicate: Callable[[str], bool]) -> str:
+        def prefer(values: list[str], keywords: list[str]) -> str:
             for v in values:
-                if predicate(v):
+                low = v.lower()
+                if any(k in low for k in keywords):
                     return v
             return values[0] if values else ""
 
         if initial:
-            default_input = first_matching(
-                in_values,
-                lambda v: "DEFAULT IN" in v and not _is_likely_virtual_or_loopback(v),
-            )
-            if not default_input:
-                default_input = first_matching(in_values, lambda v: _preferred_input_name(v))
-            self.input_var.set(default_input)
-            if sc_choices:
-                self.output_var.set(preferred)
-            else:
-                default_output = first_matching(
-                    out_values,
-                    lambda v: "DEFAULT OUT" in v and _preferred_output_name(v),
-                )
-                if not default_output:
-                    default_output = first_matching(out_values, lambda v: _preferred_output_name(v))
-                self.output_var.set(default_output)
+            self.input_var.set(prefer(in_values, ["microphone", "mic", "realtek"]))
+            self.output_var.set(prefer(out_values, ["headphone", "earphone", "buds", "headset"]))
         else:
             if self.input_var.get() not in in_values:
                 self.input_var.set(in_values[0] if in_values else "")
@@ -2095,72 +2398,39 @@ class UIBridge:
         self.status_var.set("Ready")
 
     def test_output(self) -> None:
-        output = self._select_output_object(self.output_var.get())
-        if output is None:
+        idx = find_device_index(self.output_var.get())
+        if idx is None:
             messagebox.showwarning(APP_NAME, "Select an output device first.")
             return
+        fs = 44100
+        duration = 0.5
+        t = np.arange(int(fs * duration), dtype=np.float32) / fs
+        tone = 0.08 * np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
         try:
-            fs = 48000
-            duration = 0.7
-            t = np.arange(int(fs * duration), dtype=np.float32) / fs
-            tone = 0.08 * np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
-            if sc is not None and hasattr(output, "play"):
-                channels_available = getattr(output, "channels", 2)
-                channels = max(1, min(int(channels_available) if isinstance(channels_available, int) else 2, 2))
-                arr = np.repeat(tone[:, None], 2, axis=1) if channels == 2 else tone[:, None]
-                with output.player(samplerate=fs, channels=channels, blocksize=512, exclusive_mode=False) as player:
+            if sc is not None:
+                speaker = soundcard_speaker_for_portaudio_index(idx)
+                if speaker is None:
+                    raise RuntimeError("Could not resolve selected Windows speaker")
+                with speaker.player(samplerate=48000, channels=2, blocksize=512, exclusive_mode=False) as player:
+                    arr = np.repeat((tone * 0.8)[:, None], 2, axis=1)
                     player.play(arr.astype(np.float32, copy=False))
-                    # SoundCard Player.play() queues audio asynchronously. Keep the
-                    # player context alive until the tone has actually drained.
                     time.sleep(duration + 0.15)
-            elif isinstance(output, int):
-                sd.play(tone, samplerate=fs, device=output, blocking=False)
             else:
-                raise RuntimeError("Selected output cannot be opened")
+                sd.play(tone, samplerate=fs, device=idx, blocking=True)
             self.status_var.set("Output test: 440 Hz tone")
         except Exception as exc:
             self._show_error(f"Output test failed: {exc}")
-
-    def test_tts(self) -> None:
-        """Generate and play a short local TTS sample without microphone/STT/translation."""
-        if self.running:
-            messagebox.showinfo(APP_NAME, "Stop the live translator before running the isolated TTS test.")
-            return
-        output = self._select_output_object(self.output_var.get())
-        if output is None:
-            messagebox.showwarning(APP_NAME, "Select an output device first.")
-            return
-
-        target_name = self.target_var.get().strip() or "Hindi"
-        target = LANGUAGES.get(target_name, LANGUAGES["Hindi"])
-        self.status_var.set("Running isolated Parler-TTS test through selected speaker...")
-
-        def run() -> None:
-            try:
-                engine = ParlerTTSEngine(self, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER, target.name)
-                engine.load()
-                sample_text = {
-                    "Hindi": "नमस्ते, यह भाषा साथी का परीक्षण है।",
-                    "English": "Hello, this is a BhashaSaathi TTS test.",
-                    "Marathi": "नमस्कार, हा भाषा साथीचा आवाज चाचणी संदेश आहे.",
-                }.get(target.name, "नमस्ते, यह भाषा साथी का परीक्षण है।")
-                elapsed = engine.stream_to_output(
-                    sample_text,
-                    output,
-                    threading.Event(),
-                    on_first_audio=lambda d: self.status(f"TTS first audio: {d:.2f}s"),
-                )
-                self.status(f"TTS test complete: {elapsed:.2f}s")
-            except Exception as exc:
-                self.error(Pipeline.format_exception(exc))
-
-        threading.Thread(target=run, name="tts-test", daemon=True).start()
 
     def _show_error(self, text: str) -> None:
         # Keep very large tracebacks out of the modal message box title area.
         messagebox.showerror(APP_NAME, text[:6000])
 
     def _on_close(self) -> None:
+        if self.p2p_server is not None:
+            try:
+                self.p2p_server.stop()
+            except Exception:
+                pass
         if self._pipeline is not None:
             try:
                 self._pipeline.stop()
@@ -2193,16 +2463,7 @@ def print_environment() -> None:
             pass
     print(f"Model compute choice: {choose_compute_device()}")
     print(f"Whisper device/compute: {choose_whisper_device()}")
-    print(f"SoundCard available: {sc is not None}")
-    print(f"ParlerTTSStreamer available: {ParlerTTSStreamer is not None}")
-    if sc is not None:
-        try:
-            speakers = sc.all_speakers()
-            print(f"SoundCard speakers: {len(speakers)}")
-            for i, speaker in enumerate(speakers[:10]):
-                print(f"  SC:{i}: {getattr(speaker, 'name', 'unknown')} ({getattr(speaker, 'channels', '?')} ch)")
-        except Exception as exc:
-            print(f"SoundCard speaker enumeration failed: {exc}")
+    print(f"Parler-TTS device: {ParlerTTSEngine._choose_tts_device()}")
     print(f"Model root: {MODEL_ROOT}")
     for p in [STT_DIR, EN_INDIC_DIR, INDIC_EN_DIR, INDIC_INDIC_DIR, TTS_DIR, PARLER_DESCRIPTION_TOKENIZER]:
         print(f"{'OK ' if p.exists() else 'MISS'} {p}")
@@ -2210,26 +2471,8 @@ def print_environment() -> None:
 
 def list_devices_cli() -> None:
     print("=== Audio devices ===")
-    try:
-        default_in, default_out = sd.default.device
-        print(f"Windows/PortAudio default input index : {default_in}")
-        print(f"Windows/PortAudio default output index: {default_out}")
-    except Exception:
-        default_in = default_out = None
-    print()
     for idx, d in enumerate(sd.query_devices()):
-        role = _device_role_tag(d)
-        flags = []
-        if default_in is not None and idx == int(default_in):
-            flags.append("DEFAULT-IN")
-        if default_out is not None and idx == int(default_out):
-            flags.append("DEFAULT-OUT")
-        if int(d.get("max_input_channels", 0)) > 0 and _is_likely_virtual_or_loopback(str(d.get("name", ""))):
-            flags.append("AVOID-VIRTUAL/LOOPBACK")
-        print(
-            f"{idx}: {d['name']} | {role} | SR={d['default_samplerate']}"
-            + (f" | {' '.join(flags)}" if flags else "")
-        )
+        print(f"{idx}: {d['name']} | IN={d['max_input_channels']} OUT={d['max_output_channels']} SR={d['default_samplerate']}")
 
 
 def launch_gui() -> None:

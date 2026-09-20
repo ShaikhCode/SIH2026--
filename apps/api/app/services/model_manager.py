@@ -35,6 +35,7 @@ class ModelManager:
             settings.cpu_only,
             settings.max_translation_chars,
             text_beams=settings.text_translation_beams,
+            route_cache_limit=settings.translation_route_cache_limit,
         )
         self.stt = FasterWhisperAdapter(MODELS_ROOT, settings.cpu_only)
         self.tts = IndicParlerTTSAdapter(MODELS_ROOT, settings.cpu_only, settings.parler_description_tokenizer)

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     live_end_silence_ms: int = 280
     live_queue_size: int = 2
     live_translation_beams: int = 2
+    translation_route_cache_limit: int = 3
     live_tts_stream_seconds: float = 1.0
     live_tts_stream_timeout: float = 15.0
     text_translation_beams: int = 3
