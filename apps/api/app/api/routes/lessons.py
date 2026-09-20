@@ -239,15 +239,12 @@ def list_lessons(group_id: int, db: Session = Depends(get_db), user=Depends(curr
 
 
 @router.get('/lessons/{lesson_id}')
-def get_lesson(lesson_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
+def get_lesson(lesson_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
     lesson = db_lesson(db, lesson_id)
     if not can_read_lesson(db, lesson, user):
         raise HTTPException(403, detail={'code': 'LESSON_ACCESS_DENIED', 'message': 'This lesson is not available to your account.'})
     include_pending = bool(db.query(Group).filter_by(id=lesson.group_id, owner_id=user.id).first())
-    payload = pack(db, lesson, include_pending=include_pending, viewer_id=user.id)
-    required = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva') if lang != lesson.source_language]
-    background_tasks.add_task(manager.warm_translation_routes, lesson.source_language, required)
-    return payload
+    return pack(db, lesson, include_pending=include_pending, viewer_id=user.id)
 
 
 @router.patch('/lessons/{lesson_id}')
@@ -635,6 +632,29 @@ def preparation_status(lesson_id: int, db: Session = Depends(get_db), user=Depen
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
     return preparation_views(db, version.id)
+
+
+@router.post('/lessons/{lesson_id}/preparations/tts/{language}')
+def queue_tts_preparation(lesson_id: int, language: str, db: Session = Depends(get_db), user=Depends(current_user)):
+    """Explicitly queue heavyweight lesson audio. It never starts automatically on approval."""
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    allowed = {'eng_Latn', 'hin_Deva', 'mar_Deva'}
+    if language not in allowed:
+        raise HTTPException(400, detail={'code': 'LANGUAGE_UNSUPPORTED', 'message': 'Unsupported lesson language.'})
+    if language == lesson.source_language:
+        text = (version.clean_transcript or version.source_text).strip()
+        if not text:
+            raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'There is no source text for audio generation.'})
+    else:
+        translation = db.query(Translation).filter_by(lesson_version_id=version.id, target_language=language).first()
+        if not translation or not translation.translated_text.strip():
+            raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'Prepare the language translation first.'})
+        if translation.verification_status != 'TEACHER_APPROVED':
+            raise HTTPException(400, detail={'code': 'TTS_REVIEW_REQUIRED', 'message': 'Approve the translation before generating student-facing audio.'})
+    job_id = enqueue_retry(version.id, 'tts', language)
+    return {'job_id': job_id, 'status': 'QUEUED', 'kind': 'tts', 'language': language}
 
 
 @router.post('/lessons/{lesson_id}/preparations/{job_id}/retry')

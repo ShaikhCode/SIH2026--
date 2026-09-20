@@ -58,6 +58,7 @@ export default function LessonBuilderPage() {
   const worksheetFrame = useRef<HTMLIFrameElement>(null);
   const warmStarted = useRef(false);
   const preparationSignature = useRef('');
+  const publishLock = useRef(false);
 
   const refresh = useCallback(async () => {
     const current = await api.lesson(lessonId);
@@ -137,7 +138,7 @@ export default function LessonBuilderPage() {
   }, [sourceLanguage, requiredLanguages]);
 
   const saveDraft = useCallback(async (silent = false) => {
-    if (!hydrated.current) return;
+    if (!hydrated.current || publishLock.current) return;
     try {
       const updated = await api.patchLesson(lessonId, {
         title: title.trim(),
@@ -291,6 +292,12 @@ export default function LessonBuilderPage() {
   });
 
 
+  const queueAudio = (language: Lang) => run(`Queueing ${label(language)} audio…`, async () => {
+    await api.queueTTSPreparation(lessonId, language);
+    setAudioStatus((old) => ({ ...old, [language]: 'queued' }));
+    push(`${label(language)} audio queued. It is separate from publishing and practice.`);
+  });
+
   const playArtifact = useCallback(async (language: Lang) => {
     const artifact = pack?.artifacts.find((item) => item.type === 'audio' && item.language === language);
     if (!artifact) { push(`${label(language)} audio is still preparing.`); return; }
@@ -328,17 +335,10 @@ export default function LessonBuilderPage() {
         }
         return next;
       });
-
       const signature = jobs.map((job) => `${job.id}:${job.status}:${job.error || ''}`).join('|');
-      const previous = preparationSignature.current;
+      const changed = signature !== preparationSignature.current;
       preparationSignature.current = signature;
-      const changed = Boolean(previous) && signature !== previous;
-      const terminalChanged = changed && jobs.some((job) => job.status === 'READY' || job.status === 'FAILED');
-      // Do not reload the entire lesson pack on every queued/running heartbeat.
-      // Only hydrate the pack when a job reaches a terminal state and a persisted
-      // artifact/question may now be visible. This keeps the UI responsive while
-      // long local Parler inference is running.
-      if (terminalChanged) await refresh();
+      if (changed) await refresh();
       return jobs.some((job) => job.status === 'QUEUED' || job.status === 'RUNNING');
     } catch {
       return false;
@@ -401,27 +401,20 @@ export default function LessonBuilderPage() {
 
   const publish = () => run('Publishing lesson…', async () => {
     if (!readiness.publish) throw new Error(`Publish is blocked: ${readiness.problems.join(' • ')}`);
-
-    // The API returns a tiny acknowledgement. Do not make the visible publish
-    // result depend on a second lesson-pack request or background preparation.
-    const result = await api.publish(lessonId);
-    if (!result?.ok) throw new Error('The server did not confirm publication.');
-
-    const publishedAt = result.published_at || new Date().toISOString();
-    setPack((previous) => {
-      if (!previous) return previous;
-      return {
-        ...previous,
-        lesson: { ...previous.lesson, status: 'PUBLISHED' },
-        version: { ...previous.version, published_at: publishedAt },
-      };
-    });
-    setStep(STEPS.length - 1);
-    push('Lesson published. Students can now download it for offline learning.');
-
-    // Refresh in the background only for authoritative state/version history.
-    // A refresh failure must never blank or invalidate the already-published UI.
-    void Promise.allSettled([refresh(), loadVersions()]);
+    publishLock.current = true;
+    if (autosaveTimer.current) {
+      window.clearTimeout(autosaveTimer.current);
+      autosaveTimer.current = null;
+    }
+    try {
+      const updated = await api.publish(lessonId);
+      setPack(updated);
+      await loadVersions();
+      push('Lesson published. Students can now download it for offline learning.');
+    } catch (err) {
+      publishLock.current = false;
+      throw err;
+    }
   });
 
   const next = async () => {
@@ -548,7 +541,7 @@ export default function LessonBuilderPage() {
             <div className="action-card-grid">
               <Card className="action-card"><div className="action-icon"><FileText size={19} /></div><strong>Practice</strong><span>Draft questions are prepared automatically after translation approval. Approve them before students start practice.</span><div className="button-row wrap">{requiredLanguages.map((lang) => <Button key={lang} variant={activePracticeLanguage === lang ? 'primary' : 'secondary'} onClick={() => setActivePracticeLanguage(lang)} disabled={!!busy}>{label(lang)}</Button>)}</div></Card>
               <Card className="action-card"><div className="action-icon"><Printer size={19} /></div><strong>Worksheet</strong><span>Generate only when needed. It is not part of the critical publish path.</span><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}>Preview worksheet</Button></Card>
-              <Card className="action-card"><div className="action-icon"><Volume2 size={19} /></div><strong>Audio</strong><span>Approved translations enter the background TTS queue. Publish does not wait for it.</span><div className="audio-prep-list">{requiredLanguages.map((lang) => { const artifact = pack.artifacts.find((item) => item.type === 'audio' && item.language === lang); const state = audioStatus[lang] || (artifact ? 'ready' : 'idle'); return <div className="audio-prep-row" key={lang}><div><strong>{label(lang)}</strong><small>{state === 'ready' ? 'Audio ready' : state === 'generating' ? 'Generating in background…' : state === 'queued' ? 'Queued in background…' : state === 'error' ? (audioErrors[lang] || 'Generation failed') : 'Waiting for text approval'}</small></div><div className="button-row">{state === 'ready' && artifact ? <><audio id={`lesson-audio-${lang}`} controls preload="none" /><Button variant="secondary" onClick={() => void playArtifact(lang)}><Play size={14} /> Hear</Button></> : state === 'error' ? <Button variant="secondary" onClick={() => { const job = pack.preparations?.find((item) => item.kind === 'tts' && item.language === lang); if (job) void run('Retrying audio…', async () => { await api.retryPreparation(lessonId, job.id); }); }}>Retry</Button> : <Status tone="info">Background</Status>}</div></div>; })}</div></Card>
+              <Card className="action-card"><div className="action-icon"><Volume2 size={19} /></div><strong>Audio</strong><span>Audio is manual because local Parler-TTS can be slow. Generate it only when you need a downloadable lesson recording. Publish never waits for audio.</span><div className="audio-prep-list">{requiredLanguages.map((lang) => { const artifact = pack.artifacts.find((item) => item.type === 'audio' && item.language === lang); const state = audioStatus[lang] || (artifact ? 'ready' : 'idle'); return <div className="audio-prep-row" key={lang}><div><strong>{label(lang)}</strong><small>{state === 'ready' ? 'Audio ready' : state === 'generating' ? 'Generating in background…' : state === 'queued' ? 'Queued in background…' : state === 'error' ? (audioErrors[lang] || 'Generation failed') : 'Waiting for text approval'}</small></div><div className="button-row">{state === 'ready' && artifact ? <><audio id={`lesson-audio-${lang}`} controls preload="none" /><Button variant="secondary" onClick={() => void playArtifact(lang)}><Play size={14} /> Hear</Button></> : state === 'error' ? <Button variant="secondary" onClick={() => { const job = pack.preparations?.find((item) => item.kind === 'tts' && item.language === lang); if (job) void run('Retrying audio…', async () => { await api.retryPreparation(lessonId, job.id); }); else void queueAudio(lang); }}>Retry</Button> : state === 'idle' ? <Button variant="secondary" onClick={() => void queueAudio(lang)}>Generate</Button> : <Status tone="info">Background</Status>}</div></div>; })}</div></Card>
             </div>
             <div className="info-banner"><ShieldCheck size={16} /><div><strong>Publish rule</strong><p>Approved text is enough to publish. Audio and practice continue preparing against the same lesson version after publication.</p></div></div>
             <div className="practice-review-block"><strong>Practice review</strong><span>Background questions are optional for publication. Review and approve them when you want the practice activity live.</span>{practiceDrafts.length > 0 && <div className="practice-list">{practiceDrafts.slice(0, 6).map((question) => <div className="practice-row" key={question.id}><div><strong>{question.prompt}</strong><small>{label(question.language)}</small></div><Button variant="secondary" onClick={() => void approvePractice(question)} disabled={!!busy}><Check size={14} /> Approve</Button></div>)}</div>}{practiceDrafts.length === 0 && <Status tone={practiceReady ? 'success' : 'info'}>{practiceReady ? 'Approved practice is ready.' : 'Waiting for background practice generation.'}</Status>}</div>
@@ -556,14 +549,14 @@ export default function LessonBuilderPage() {
           </Card>}
           {step === 4 && <Card><SectionTitle title="5. Review & publish" subtitle="Students only receive the published version. Translation approval is the human content gate; audio is generated from that approved text." />
             <div className="preview-card"><div className="preview-top"><div><span className="eyebrow">STUDENT PREVIEW</span><h2>{title}</h2><p>{topic || 'Multilingual classroom lesson'}</p></div><Status tone={readiness.publish ? 'success' : 'warning'}>{readiness.publish ? 'Ready to publish' : 'Review required'}</Status></div><div className="preview-concepts">{concepts.filter(Boolean).map((concept) => <span key={concept}>{concept}</span>)}</div><div className="preview-source-strip"><strong>{nativeLabel(sourceLanguage)} · Original teacher source</strong><p>{transcript || source}</p></div><div className="preview-language-grid">{requiredLanguages.map((lang) => { const translation = translationByLanguage.get(lang); const approved = translation?.verification_status === 'TEACHER_APPROVED'; return <div className="preview-language" key={lang}><div><strong>{nativeLabel(lang)}</strong>{translation ? <Status tone={approved ? 'success' : 'warning'}>{translation.verification_status.replaceAll('_', ' ')}</Status> : <Status>Not prepared</Status>}</div><p>{translation?.text || 'Not prepared yet.'}</p></div>; })}</div></div>
-            <div className="publish-checklist"><div><Check size={15} /><span>Original source preserved</span></div><div><Check size={15} /><span>{requiredLanguages.map(label).join(' + ')} prepared and teacher-approved</span></div><div><Check size={15} /><span>Audio and practice may continue preparing after publish</span></div><div><Check size={15} /><span>{audioReady ? 'All target-language audio prepared' : 'Background audio will keep preparing'}</span></div><div><Check size={15} /><span>Published package becomes eligible for offline sync</span></div></div>
+            <div className="publish-checklist"><div><Check size={15} /><span>Original source preserved</span></div><div><Check size={15} /><span>{requiredLanguages.map(label).join(' + ')} prepared and teacher-approved</span></div><div><Check size={15} /><span>{approvedPractice.length} approved practice question(s)</span></div><div><Check size={15} /><span>{audioReady ? 'All target-language audio prepared' : 'Background audio still preparing'}</span></div><div><Check size={15} /><span>Published package becomes eligible for offline sync</span></div></div>
             {!readiness.publish && <div className="blocker-panel"><strong>Still blocked</strong><ul>{readiness.problems.map((problem) => <li key={problem}>{problem.replaceAll('_',' ')}</li>)}</ul></div>}
             <div className="button-row wrap"><Button variant="secondary" onClick={createVersion} disabled={!!busy}><Layers size={15} /> Save as new version</Button><Button variant="secondary" onClick={() => void generateWorksheet()} disabled={!!busy}><Printer size={15} /> Worksheet preview</Button><Button onClick={() => void publish()} disabled={!readiness.publish || !!busy}><Send size={15} /> Publish lesson</Button></div>
             <div className="version-history"><SectionTitle title="Version history" subtitle="Restore only previously published versions; history is never deleted." />{versions.map((version) => <div className="version-row" key={version.id}><div><strong>Version {version.version_number}</strong><span>{new Date(version.created_at).toLocaleString()}</span></div><div>{version.published_at ? <Status tone="success">Published</Status> : <Status>Draft</Status>}{version.published_at && version.id !== pack.version.id && <Button variant="ghost" onClick={() => void rollback(version.id)} disabled={!!busy}>Restore</Button>}</div></div>)}</div>
           </Card>}
         </section>
 
-        <aside className="builder-side"><Card className="sticky-card"><SectionTitle title="Live readiness" subtitle="Background work persists on the server." /><div className="status-list"><Readiness label="Original lesson" ok={Boolean(source.trim() || transcript.trim())} text={source.trim() || transcript.trim() ? 'Ready' : 'Missing'} /><Readiness label="Concepts" ok={Boolean(concepts.filter(Boolean).length)} text={`${concepts.filter(Boolean).length} saved`} />{requiredLanguages.map((language) => { const translation = translationByLanguage.get(language); return <Readiness key={language} label={label(language)} ok={translation?.verification_status === 'TEACHER_APPROVED'} text={translation?.verification_status === 'TEACHER_APPROVED' ? 'Approved' : translation ? 'Review' : 'Not prepared'} />; })}<Readiness label="Practice" ok={practiceReady} text={practiceReady ? 'Ready' : 'Background'} />{audioReadyByLanguage.map(({ language, ready }) => <Readiness key={`audio-${language}`} label={`${label(language)} audio`} ok={ready} text={ready ? 'Ready' : (audioStatus[language] || 'Background')} />)}<Readiness label="Publish" ok={pack.lesson.status === 'PUBLISHED' || readiness.publish} text={pack.lesson.status === 'PUBLISHED' ? 'Published' : readiness.publish ? 'Unlocked' : 'Needs text approval'} /></div><div className="side-hint"><strong>{pack.lesson.status === 'PUBLISHED' ? 'Published' : readiness.publish ? 'Ready to publish' : 'Why is it blocked?'}</strong><p>{pack.lesson.status === 'PUBLISHED' ? 'Students can receive this version. Audio and practice continue independently.' : readiness.publish ? 'Text approval is complete. Publishing does not wait for audio or practice.' : readiness.problems.join(' • ')}</p></div></Card><Card><SectionTitle title="Core loop" /><div className="mini-flow"><span>Speak / write</span><b>↓</b><span>Concepts</span><b>↓</b><span>Translate + review</span><b>↓</b><span>Background audio + practice</span><b>↓</b><span>Publish + learn</span></div></Card></aside>
+        <aside className="builder-side"><Card className="sticky-card"><SectionTitle title="Live readiness" subtitle="Background work persists on the server." /><div className="status-list"><Readiness label="Original lesson" ok={Boolean(source.trim() || transcript.trim())} text={source.trim() || transcript.trim() ? 'Ready' : 'Missing'} /><Readiness label="Concepts" ok={Boolean(concepts.filter(Boolean).length)} text={`${concepts.filter(Boolean).length} saved`} />{requiredLanguages.map((language) => { const translation = translationByLanguage.get(language); return <Readiness key={language} label={label(language)} ok={translation?.verification_status === 'TEACHER_APPROVED'} text={translation?.verification_status === 'TEACHER_APPROVED' ? 'Approved' : translation ? 'Review' : 'Not prepared'} />; })}<Readiness label="Practice" ok={practiceReady} text={practiceReady ? 'Ready' : 'Background'} />{audioReadyByLanguage.map(({ language, ready }) => <Readiness key={`audio-${language}`} label={`${label(language)} audio`} ok={ready} text={ready ? 'Ready' : (audioStatus[language] || 'Background')} />)}<Readiness label="Publish" ok={readiness.publish} text={readiness.publish ? 'Unlocked' : 'Needs text approval'} /></div><div className="side-hint"><strong>Why is it blocked?</strong><p>{readiness.publish ? 'Text approval is complete. Audio and practice may still be running in the background.' : readiness.problems.join(' • ')}</p></div></Card><Card><SectionTitle title="Core loop" /><div className="mini-flow"><span>Speak / write</span><b>↓</b><span>Concepts</span><b>↓</b><span>Translate + review</span><b>↓</b><span>Background audio + practice</span><b>↓</b><span>Publish + learn</span></div></Card></aside>
       </div>
     </Page>
 

@@ -131,6 +131,7 @@ export const api = {
     request<{ translation_id: number; back_translation: string; cached: boolean; back_translation_ms: number }>(`/lessons/${id}/translation/${translationId}/back-translate`, { method: 'POST' }),
   preparations: (id: number) => request<any[]>(`/lessons/${id}/preparations`),
   retryPreparation: (id: number, jobId: number) => request<any>(`/lessons/${id}/preparations/${jobId}/retry`, { method: 'POST' }),
+  queueTTSPreparation: (id: number, language: Lang) => request<any>(`/lessons/${id}/preparations/tts/${language}`, { method: 'POST' }),
   tts: (id: number, target_language: Lang) =>
     request<any>(`/lessons/${id}/tts`, { method: 'POST', body: JSON.stringify({ target_language, speaker: 'classroom_teacher' }) }),
   practice: (id: number, language: Lang, count = 4) =>
@@ -138,7 +139,7 @@ export const api = {
   approvePractice: (id: number, questionId: number, approved: boolean) =>
     request<any>(`/lessons/${id}/practice/${questionId}/approve`, { method: 'POST', body: JSON.stringify({ approved }) }),
   worksheet: (id: number) => request<{ html: string; [key: string]: unknown }>(`/lessons/${id}/generate-worksheet`, { method: 'POST' }),
-  publish: (id: number) => request<{ ok: boolean; lesson_id: number; version_id: number; published_at: string | null }>(`/lessons/${id}/publish`, { method: 'POST' }),
+  publish: (id: number) => request<LessonPack>(`/lessons/${id}/publish`, { method: 'POST' }),
   versions: (id: number) => request<VersionSummary[]>(`/lessons/${id}/versions`),
   newVersion: (id: number, body: Record<string, unknown>) =>
     request<LessonPack>(`/lessons/${id}/versions`, { method: 'POST', body: JSON.stringify(body) }),

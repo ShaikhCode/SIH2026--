@@ -84,10 +84,16 @@ def enqueue_translation_approved(lesson_id: int, version_id: int, target_languag
             return
         created: list[int] = []
 
-        for kind, language in (('tts', target_language), ('practice', target_language)):
-            job = _ensure_job(db, version.id, kind, language)
-            if job.status in {'QUEUED', 'FAILED'}:
-                created.append(job.id)
+            # PRACTICE is cheap enough for the teacher workflow and can prepare in
+        # the background immediately after approval.
+        #
+        # TTS is intentionally NOT auto-started here. Indic Parler-TTS can
+        # monopolize a laptop CPU for a long time and starve translation/practice.
+        # Audio is queued explicitly from the Activities screen instead.
+        kind, language = ('practice', target_language)
+        job = _ensure_job(db, version.id, kind, language)
+        if job.status in {'QUEUED', 'FAILED'}:
+            created.append(job.id)
 
         required = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva') if lang != lesson.source_language]
         approved = {
@@ -248,6 +254,14 @@ def resume_pending_preparations() -> None:
         rows = db.query(PreparationJob).filter(PreparationJob.status.in_(['QUEUED', 'RUNNING'])).all()
         ids = []
         for row in rows:
+            # TTS is now opt-in. Do not resurrect old heavy audio work when the
+            # API restarts for a viva/demo; the teacher can press Generate later.
+            if row.kind == 'tts':
+                row.status = 'FAILED'
+                row.error = 'Audio generation is manual in demo-safe mode.'
+                row.started_at = None
+                row.finished_at = _now()
+                continue
             row.status = 'QUEUED'
             row.started_at = None
             row.finished_at = None
