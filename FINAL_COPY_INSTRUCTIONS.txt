@@ -1,8 +1,14 @@
-FINALV19 COPY NOTES
-====================
+BhashaSaathi V22 — Viva-stable final patch
 
-1. Keep your existing local model folders; the ZIP intentionally does not ship model weights.
-2. Keep or recreate apps/api/.venv using the already-working local dependency set. Do not blindly rerun an unconstrained requirements install on Python 3.13.
-3. Start FastAPI on 127.0.0.1:8000 and the Vite app on 5173.
-4. Verify translation with scripts\model_lab.py before a classroom demo.
-5. The new publish rule allows publication after both required target translations are teacher-approved; audio and practice continue in the background.
+1. BACK UP your existing apps/api/data/bhashasaathi.db and apps/api/data/storage/ before replacing code.
+2. Extract this release over a clean project copy (or copy apps/api and apps/web source files into the existing project while preserving your data folder).
+3. In apps/api activate the existing .venv.
+4. Keep the verified CUDA PyTorch installation:
+   python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+5. Start API without --reload for the viva:
+   uvicorn app.main:app --host 127.0.0.1 --port 8000
+6. Start web normally.
+7. Lesson flow: Generate targets -> approve ready language immediately -> approve remaining language -> Activities -> Publish.
+8. Audio is manual. One Generate click creates one idempotent preparation job. Do not press Retry repeatedly.
+9. Publish does not require audio or practice.
+10. Do not run a full 30-second Parler generation live during the viva. The measured RTX 2050 benchmark was 116.12s for 30.20s audio.

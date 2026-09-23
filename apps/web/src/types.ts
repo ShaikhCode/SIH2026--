@@ -1,10 +1,11 @@
-export type Lang = 'eng_Latn' | 'hin_Deva' | 'mar_Deva';
+export type Lang = 'eng_Latn' | 'hin_Deva' | 'mar_Deva' | 'sat_Olck';
 export type Role = 'user' | 'admin' | 'student';
 
 export const LANGS: Record<Lang, { name: string; native: string; script: string }> = {
   eng_Latn: { name: 'English', native: 'English', script: 'Latin' },
   hin_Deva: { name: 'Hindi', native: 'हिन्दी', script: 'Devanagari' },
   mar_Deva: { name: 'Marathi', native: 'मराठी', script: 'Devanagari' },
+  sat_Olck: { name: 'Santali', native: 'ᱥᱟᱱᱛᱟᱲᱤ', script: 'Ol Chiki' },
 };
 
 export interface User {

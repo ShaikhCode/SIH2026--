@@ -1,159 +1,26 @@
-BhashaSaathi FinalV19
-====================
+BhashaSaathi V25 Final Product
 
-Files in this release:
-.env.example
-.gitignore
-BUILD_MANIFEST.txt
-FINALV18_README.md
-FINALV18_SPEED_AUDIT.md
-FINALV18_TEST_RESULTS.txt
-FINALV19_README.md
-FINALV19_SPEED_AUDIT.md
-FINALV19_TEST_RESULTS.txt
-FINAL_COPY_INSTRUCTIONS.txt
-MODEL_INTEGRATION_HANDOFF.md
-README.md
-README_V17_SPEED.md
-VERSION_HISTORY.md
-apps/api/.env.example
-apps/api/alembic/env.py
-apps/api/alembic/script.py.mako
-apps/api/alembic/versions/0001_initial.py
-apps/api/alembic/versions/0002_sync_user.py
-apps/api/alembic.ini
-apps/api/app/__init__.py
-apps/api/app/__pycache__/__init__.cpython-313.pyc
-apps/api/app/__pycache__/main.cpython-313.pyc
-apps/api/app/__pycache__/schemas.cpython-313.pyc
-apps/api/app/adapters/__init__.py
-apps/api/app/adapters/__pycache__/__init__.cpython-313.pyc
-apps/api/app/adapters/__pycache__/stt.cpython-313.pyc
-apps/api/app/adapters/__pycache__/translation.cpython-313.pyc
-apps/api/app/adapters/__pycache__/tts.cpython-313.pyc
-apps/api/app/adapters/stt.py
-apps/api/app/adapters/translation.py
-apps/api/app/adapters/tts.py
-apps/api/app/api/__init__.py
-apps/api/app/api/__pycache__/__init__.cpython-313.pyc
-apps/api/app/api/routes/__init__.py
-apps/api/app/api/routes/__pycache__/__init__.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/auth.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/groups.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/lessons.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/live.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/runtime.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/student.cpython-313.pyc
-apps/api/app/api/routes/__pycache__/sync.cpython-313.pyc
-apps/api/app/api/routes/auth.py
-apps/api/app/api/routes/groups.py
-apps/api/app/api/routes/lessons.py
-apps/api/app/api/routes/live.py
-apps/api/app/api/routes/runtime.py
-apps/api/app/api/routes/student.py
-apps/api/app/api/routes/sync.py
-apps/api/app/core/__init__.py
-apps/api/app/core/__pycache__/__init__.cpython-313.pyc
-apps/api/app/core/__pycache__/config.cpython-313.pyc
-apps/api/app/core/__pycache__/security.cpython-313.pyc
-apps/api/app/core/config.py
-apps/api/app/core/security.py
-apps/api/app/db/__init__.py
-apps/api/app/db/__pycache__/__init__.cpython-313.pyc
-apps/api/app/db/__pycache__/session.cpython-313.pyc
-apps/api/app/db/session.py
-apps/api/app/layer2/__init__.py
-apps/api/app/layer2/__pycache__/__init__.cpython-313.pyc
-apps/api/app/layer2/__pycache__/concepts.cpython-313.pyc
-apps/api/app/layer2/__pycache__/glossary.cpython-313.pyc
-apps/api/app/layer2/__pycache__/language_codes.cpython-313.pyc
-apps/api/app/layer2/__pycache__/models.cpython-313.pyc
-apps/api/app/layer2/__pycache__/normalizer.cpython-313.pyc
-apps/api/app/layer2/__pycache__/service.cpython-313.pyc
-apps/api/app/layer2/__pycache__/verifier.cpython-313.pyc
-apps/api/app/layer2/concepts.py
-apps/api/app/layer2/glossary.py
-apps/api/app/layer2/language_codes.py
-apps/api/app/layer2/models.py
-apps/api/app/layer2/normalizer.py
-apps/api/app/layer2/service.py
-apps/api/app/layer2/verifier.py
-apps/api/app/main.py
-apps/api/app/models/__init__.py
-apps/api/app/models/__pycache__/__init__.cpython-313.pyc
-apps/api/app/models/__pycache__/entities.cpython-313.pyc
-apps/api/app/models/entities.py
-apps/api/app/schemas.py
-apps/api/app/services/__init__.py
-apps/api/app/services/__pycache__/__init__.cpython-313.pyc
-apps/api/app/services/__pycache__/artifacts.cpython-313.pyc
-apps/api/app/services/__pycache__/background_prep.cpython-313.pyc
-apps/api/app/services/__pycache__/content.cpython-313.pyc
-apps/api/app/services/__pycache__/live_translation.cpython-313.pyc
-apps/api/app/services/__pycache__/model_manager.cpython-313.pyc
-apps/api/app/services/__pycache__/publish.cpython-313.pyc
-apps/api/app/services/__pycache__/worksheet.cpython-313.pyc
-apps/api/app/services/artifacts.py
-apps/api/app/services/background_prep.py
-apps/api/app/services/content.py
-apps/api/app/services/live_translation.py
-apps/api/app/services/model_manager.py
-apps/api/app/services/publish.py
-apps/api/app/services/worksheet.py
-apps/api/requirements.txt
-apps/web/index.html
-apps/web/package.json
-apps/web/public/manifest.webmanifest
-apps/web/public/sw.js
-apps/web/src/App.tsx
-apps/web/src/components/Shell.tsx
-apps/web/src/components/UI.tsx
-apps/web/src/features/auth/AuthContext.tsx
-apps/web/src/lib/api.ts
-apps/web/src/lib/idb.ts
-apps/web/src/lib/liveHistory.ts
-apps/web/src/lib/sync.ts
-apps/web/src/main.tsx
-apps/web/src/pages/AdminDashboardPage.tsx
-apps/web/src/pages/DiagnosticsPage.tsx
-apps/web/src/pages/GroupPage.tsx
-apps/web/src/pages/GroupsPage.tsx
-apps/web/src/pages/LandingPage.tsx
-apps/web/src/pages/LessonBuilderPage.tsx
-apps/web/src/pages/LiveTranslatePage.tsx
-apps/web/src/pages/LoginPage.tsx
-apps/web/src/pages/NotFoundPage.tsx
-apps/web/src/pages/OfflinePage.tsx
-apps/web/src/pages/RegisterPage.tsx
-apps/web/src/pages/StudentHomePage.tsx
-apps/web/src/pages/StudentLessonPage.tsx
-apps/web/src/styles.css
-apps/web/src/types.ts
-apps/web/tsconfig.json
-apps/web/vite.config.ts
-core/layer2/__init__.py
-core/layer2/concepts.py
-core/layer2/glossary.py
-core/layer2/language_codes.py
-core/layer2/models.py
-core/layer2/normalizer.py
-core/layer2/service.py
-core/layer2/verifier.py
-package.json
-scripts/audit_finalv19.py
-scripts/audit_speed_v17.py
-scripts/check_environment.py
-scripts/download_models.py
-scripts/download_tts_support.py
-scripts/model_lab.py
-scripts/perf_probe.py
-scripts/reset_local_db.py
-scripts/run_smoke_test.py
-scripts/seed_demo.py
-scripts/test_live_pipeline.py
-scripts/test_translation.py
-scripts/verify_models.py
+Core:
+- apps/api FastAPI backend
+- apps/web React/Vite frontend
+- core/ shared text intelligence
+- scripts/ diagnostics, setup and optional Santali STT downloader
 
-Release notes: FINALV19_README.md
-Speed audit: FINALV19_SPEED_AUDIT.md
-Test results: FINALV19_TEST_RESULTS.txt
+Language support:
+- English eng_Latn (default/main)
+- Hindi hin_Deva (optional)
+- Marathi mar_Deva (optional)
+- Santali sat_Olck (optional temporary, no normal approval gate)
+
+Runtime policy:
+- Publish is source-first.
+- Optional translation/practice/worksheet/audio never block publish.
+- TTS is manual/on-demand and cached.
+- Parler TTS uses CUDA/FP16 when available.
+- Santali STT uses optional IndicConformer.
+
+Included final audit:
+- FINAL_V25_PRODUCT_AUDIT.md
+- WINDOWS_FINAL_SETUP.md
+- FINAL_PRODUCT_README.md
+- FINAL_PRODUCT_CHANGELOG.md

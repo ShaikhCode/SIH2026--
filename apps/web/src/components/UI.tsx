@@ -8,6 +8,8 @@ export function Button({
   variant = 'primary',
   disabled = false,
   className = '',
+  size,
+  title,
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -15,8 +17,13 @@ export function Button({
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
   disabled?: boolean;
   className?: string;
+  /** Optional size modifier class suffix, e.g. "lg" → adds btn-lg CSS class */
+  size?: string;
+  /** Accessible tooltip / title attribute */
+  title?: string;
 }) {
-  return <button type={type} onClick={onClick} disabled={disabled} className={`btn btn-${variant} ${className}`}>{children}</button>;
+  const sizeClass = size ? ` btn-${size}` : '';
+  return <button type={type} onClick={onClick} disabled={disabled} title={title} className={`btn btn-${variant}${sizeClass} ${className}`}>{children}</button>;
 }
 
 export function Card({ children, className = '', onClick }: { children: ReactNode; className?: string; onClick?: () => void }) {

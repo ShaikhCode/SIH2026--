@@ -66,7 +66,7 @@ def ensure_practice(
     db: Session,
     version: LessonVersion,
     language: str = 'hin_Deva',
-    source_language: str = 'hin_Deva',
+    source_language: str = 'eng_Latn',
     count: int = 4,
     approved: bool = False,
     translate_fn: Callable[[str, str, str], str] | None = None,

@@ -10,7 +10,7 @@ import { api, errorMessage } from '../lib/api';
 import { deleteLiveSession, listLiveHistory, saveLiveSession, setLiveSaved, type LiveHistoryEntry, type LiveTurn } from '../lib/liveHistory';
 import { LANGS, type Lang } from '../types';
 
-const LIVE_LANGS: Lang[] = ['eng_Latn', 'hin_Deva', 'mar_Deva'];
+const LIVE_LANGS: Lang[] = ['eng_Latn', 'hin_Deva', 'mar_Deva', 'sat_Olck'];
 const label = (lang: Lang) => LANGS[lang].name;
 const nativeLabel = (lang: Lang) => LANGS[lang].native;
 
@@ -79,8 +79,8 @@ function pcmFloatChunksToWav(chunks: Float32Array[], sampleRate: number) {
 
 export default function LiveTranslatePage() {
   const { push } = useToast();
-  const [source, setSource] = useState<Lang>('hin_Deva');
-  const [target, setTarget] = useState<Lang>('mar_Deva');
+  const [source, setSource] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-source') as Lang) || 'eng_Latn');
+  const [target, setTarget] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-target') as Lang) || 'hin_Deva');
   const [status, setStatus] = useState<'idle' | 'warming' | 'ready' | 'listening' | 'stopping' | 'error'>('idle');
   const [statusText, setStatusText] = useState('Ready when you are.');
   const [transcript, setTranscript] = useState('');
@@ -165,6 +165,13 @@ export default function LiveTranslatePage() {
       setError(errorMessage(err));
       setStatusText('Local model preparation failed.');
     }
+  }, [source, target]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('bhashasaathi:live-source', source);
+      localStorage.setItem('bhashasaathi:live-target', target);
+    } catch { /* local preference only */ }
   }, [source, target]);
 
   useEffect(() => { void warm(source, target); }, [source, target, warm]);
@@ -525,7 +532,7 @@ export default function LiveTranslatePage() {
 
   return <>
     <audio ref={playbackAudioRef} hidden />
-    <Page eyebrow="LIVE TRANSLATE" title="Speak naturally. Hear the translation." subtitle="A browser-native live translator for English, Hindi and Marathi. No account required.">
+    <Page eyebrow="LIVE TRANSLATE" title="Speak naturally. Hear the translation." subtitle="A browser-native local translator for English, Hindi, Marathi and Santali. No account required.">
       <div className="live-topline">
         <div className="live-topline-copy"><Status tone={status === 'error' ? 'danger' : status === 'listening' ? 'success' : 'info'}>{status === 'listening' ? 'LIVE' : status.toUpperCase()}</Status><span>{statusText}</span></div>
         <div className="head-action-row"><Link to="/"><Button variant="ghost">Back home</Button></Link><Button variant="secondary" onClick={() => void refreshDevices()}><RefreshCw size={15} /> Refresh devices</Button></div>
@@ -536,9 +543,9 @@ export default function LiveTranslatePage() {
         <Card className="live-control-card">
           <SectionTitle title="Language pair" subtitle="Only the validated demo languages are exposed here." />
           <div className="live-language-pair">
-            <Field label="You speak"><select value={source} onChange={(event) => setSource(event.target.value as Lang)} disabled={status === 'listening'}>{LIVE_LANGS.map((lang) => <option key={lang} value={lang}>{nativeLabel(lang)} · {label(lang)}</option>)}</select></Field>
+            <Field label="You speak" hint="Saved with this live session so it can be replayed in the same direction."><select value={source} onChange={(event) => setSource(event.target.value as Lang)} disabled={status === 'listening'}>{LIVE_LANGS.map((lang) => <option key={lang} value={lang}>{nativeLabel(lang)} · {label(lang)}</option>)}</select></Field>
             <button className="swap-circle" onClick={swapLanguages} disabled={status === 'listening'} aria-label="Swap languages"><ArrowDownUp size={18} /></button>
-            <Field label="Listener hears"><select value={target} onChange={(event) => setTarget(event.target.value as Lang)} disabled={status === 'listening'}>{LIVE_LANGS.map((lang) => <option key={lang} value={lang}>{nativeLabel(lang)} · {label(lang)}</option>)}</select></Field>
+            <Field label="Listener hears" hint="Swap to reverse the direction."><select value={target} onChange={(event) => setTarget(event.target.value as Lang)} disabled={status === 'listening'}>{LIVE_LANGS.map((lang) => <option key={lang} value={lang}>{nativeLabel(lang)} · {label(lang)}</option>)}</select></Field>
           </div>
 
           <div className="device-grid">
@@ -553,7 +560,7 @@ export default function LiveTranslatePage() {
 
         <Card className="live-pipeline-card">
           <SectionTitle title="Live pipeline" subtitle="Stages run as a pipeline, not as one long blocking request." />
-          <div className="pipeline-visual"><PipelineStep icon={<Mic />} title="Microphone" active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<Languages />} title="Whisper STT" active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<AudioLines />} title="IndicTrans2" active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<Headphones />} title="Parler-TTS" active={playing} /></div>
+          <div className="pipeline-visual"><PipelineStep icon={<Mic />} title="Microphone" active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<Languages />} title={source === 'sat_Olck' ? 'IndicConformer STT' : 'Whisper STT'} active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<AudioLines />} title="IndicTrans2" active={status === 'listening'} /><div className="pipeline-arrow">→</div><PipelineStep icon={<Headphones />} title="Parler-TTS" active={playing} /></div>
           <div className="live-note"><strong>Why this feels faster</strong><p>Speech chunks are bounded, queues stay short, translation models stay warm, repeated phrases are cached in memory, and microphone capture never waits for audio playback.</p></div>
         </Card>
       </div>

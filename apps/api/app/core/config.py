@@ -9,6 +9,7 @@ API_ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     app_env: str = 'development'
+    app_version: str = '25.0.0'
     secret_key: str = 'change-this-local-secret-key-32-bytes-minimum-demo-value'
     database_url: str = 'sqlite:///./data/bhashasaathi.db'
     storage_dir: str = './data/storage'
@@ -22,6 +23,12 @@ class Settings(BaseSettings):
     tts_enabled: bool = True
     llm_enabled: bool = False
     cpu_only: bool = False
+    translation_cpu_only: bool = True
+    stt_cpu_only: bool = True
+    tts_cpu_only: bool = False
+    santali_stt_enabled: bool = True
+    santali_stt_cpu_only: bool = True
+    santali_stt_model_dir: str = './models/stt/indic-conformer-600m-multilingual'
     keep_models_loaded: bool = True
     log_level: str = 'INFO'
     max_audio_mb: int = 30
@@ -32,11 +39,15 @@ class Settings(BaseSettings):
     live_translation_beams: int = 1
     translation_route_cache_limit: int = 2
     live_tts_stream_seconds: float = 0.5
-    live_tts_stream_timeout: float = 15.0
+    live_tts_stream_timeout: float = 12.0
+    live_max_segment_ms_santali: int = 2800
     text_translation_beams: int = 1
     parler_description_tokenizer: str = ''
     live_history_ttl_hours: int = 24
     torch_threads: int = 0
+    translation_request_timeout_s: float = 90.0
+    preparation_tts_timeout_s: float = 600.0
+    preparation_practice_timeout_s: float = 180.0
     translation_max_new_tokens: int = 512
     live_translation_max_new_tokens: int = 96
     translation_inference_lock: bool = True

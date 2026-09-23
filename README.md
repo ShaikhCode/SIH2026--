@@ -1,3 +1,5 @@
+# BhashaSaathi V22 · Viva-Stable
+
 # BhashaSaathi FinalV19
 
 ## What this build solves
@@ -211,3 +213,18 @@ apps/api/models/
 - active API/web flashcard reference scan: PASS
 
 The final browser/Vite production build was not completed inside the build sandbox because npm dependency installation exceeded the available build window. Real local model inference and Windows audio playback must be verified on the demo laptop.
+
+
+## Windows RTX 2050 setup
+
+Use the verified CUDA wheel set before starting the API:
+
+```powershell
+cd apps\api
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+pip install -r requirements-windows-cuda128.txt
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO GPU')"
+```
+
+The lesson path keeps translation/Whisper on CPU and reserves the 4 GB RTX 2050 for TTS.

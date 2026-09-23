@@ -16,6 +16,9 @@ sentencepiece>=0.2,<1
 transformers==4.46.1
 huggingface_hub==0.36.0
 parler-tts==0.2.2
+descript-audio-codec>=1.0,<2
 IndicTransToolkit==1.1.1
 faster-whisper==1.2.1
-torch>=2.5,<3
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0

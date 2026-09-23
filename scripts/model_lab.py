@@ -66,7 +66,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--skip-tts', action='store_true')
     parser.add_argument('--audio', type=Path)
-    parser.add_argument('--stt-language', choices=['eng_Latn', 'hin_Deva', 'mar_Deva'])
+    parser.add_argument('--stt-language', choices=['eng_Latn', 'hin_Deva', 'mar_Deva', 'sat_Olck'])
     args = parser.parse_args()
 
     print('BhashaSaathi local-model laboratory')

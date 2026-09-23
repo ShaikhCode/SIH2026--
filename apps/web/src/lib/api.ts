@@ -59,7 +59,7 @@ function normalizeError(status: number, data: any): ApiError {
   });
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 20000): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.body && !headers.has('Content-Type') && !(options.body instanceof FormData)) {
     headers.set('Content-Type', 'application/json');
@@ -67,15 +67,41 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const accessToken = token();
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
 
+  const controller = new AbortController();
+  const parentSignal = options.signal;
+  let abortTimer: number | null = null;
+  let timedOut = false;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+
+  if (parentSignal) {
+    if (parentSignal.aborted) controller.abort(parentSignal.reason);
+    else parentSignal.addEventListener('abort', abortFromParent, { once: true });
+  }
+  abortTimer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException('Request timed out.', 'TimeoutError'));
+  }, timeoutMs);
+
   let response: Response;
   try {
-    response = await fetch(`${BASE}${path}`, { ...options, headers });
-  } catch {
+    response = await fetch(`${BASE}${path}`, { ...options, headers, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw new ApiError(408, {
+        code: 'REQUEST_TIMEOUT',
+        message: `The request took longer than ${Math.round(timeoutMs / 1000)} seconds. The lesson is safe; try again.`,
+        retryable: true,
+      });
+    }
+    if (controller.signal.aborted) throw error;
     throw new ApiError(0, {
       code: 'NETWORK_ERROR',
       message: 'Cannot reach the BhashaSaathi API. Start FastAPI on port 8000 and try again.',
       retryable: true,
     });
+  } finally {
+    if (abortTimer !== null) window.clearTimeout(abortTimer);
+    if (parentSignal) parentSignal.removeEventListener('abort', abortFromParent);
   }
 
   const data = await parseResponse(response);
@@ -124,18 +150,20 @@ export const api = {
   analyze: (id: number) => request<any>(`/lessons/${id}/analyze`, { method: 'POST' }),
   prepareConcepts: (id: number) => request<any>(`/lessons/${id}/prepare-concepts`, { method: 'POST' }),
   translate: (id: number, target_language: Lang, source_text?: string, clean_transcript?: string, source_language?: Lang) =>
-    request<any>(`/lessons/${id}/translate`, { method: 'POST', body: JSON.stringify({ target_language, source_text, clean_transcript, source_language }) }),
+    request<any>(`/lessons/${id}/translate`, { method: 'POST', body: JSON.stringify({ target_language, source_text, clean_transcript, source_language }) }, 90000),
   verify: (id: number, body: { translation_id: number; approved: boolean; edited_text?: string; native_review_status?: 'NOT_REVIEWED' | 'PENDING' | 'REJECTED' }) =>
     request<any>(`/lessons/${id}/verify-translation`, { method: 'POST', body: JSON.stringify(body) }),
+  saveTemporaryTranslation: (id: number, body: { translation_id: number; edited_text?: string }) =>
+    request<any>(`/lessons/${id}/translation/${body.translation_id}/temporary`, { method: 'POST', body: JSON.stringify({ edited_text: body.edited_text || '' }) }),
   backTranslate: (id: number, translationId: number) =>
-    request<{ translation_id: number; back_translation: string; cached: boolean; back_translation_ms: number }>(`/lessons/${id}/translation/${translationId}/back-translate`, { method: 'POST' }),
+    request<{ translation_id: number; back_translation: string; cached: boolean; back_translation_ms: number }>(`/lessons/${id}/translation/${translationId}/back-translate`, { method: 'POST' }, 90000),
   preparations: (id: number) => request<any[]>(`/lessons/${id}/preparations`),
   retryPreparation: (id: number, jobId: number) => request<any>(`/lessons/${id}/preparations/${jobId}/retry`, { method: 'POST' }),
   queueTTSPreparation: (id: number, language: Lang) => request<any>(`/lessons/${id}/preparations/tts/${language}`, { method: 'POST' }),
   tts: (id: number, target_language: Lang) =>
     request<any>(`/lessons/${id}/tts`, { method: 'POST', body: JSON.stringify({ target_language, speaker: 'classroom_teacher' }) }),
   practice: (id: number, language: Lang, count = 4) =>
-    request<any[]>(`/lessons/${id}/generate-practice`, { method: 'POST', body: JSON.stringify({ language, count }) }),
+    request<any[]>(`/lessons/${id}/generate-practice`, { method: 'POST', body: JSON.stringify({ language, count }) }, 90000),
   approvePractice: (id: number, questionId: number, approved: boolean) =>
     request<any>(`/lessons/${id}/practice/${questionId}/approve`, { method: 'POST', body: JSON.stringify({ approved }) }),
   worksheet: (id: number) => request<{ html: string; [key: string]: unknown }>(`/lessons/${id}/generate-worksheet`, { method: 'POST' }),

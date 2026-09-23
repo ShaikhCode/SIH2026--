@@ -36,6 +36,12 @@ def main() -> int:
             print('      Expected at least one of:', ', '.join(expected))
             ok = False
 
+    optional_santali = ROOT / 'stt' / 'indic-conformer-600m-multilingual'
+    santali_present = files_ok(optional_santali, ('config.json',))
+    print(('OK   ' if santali_present else 'INFO ') + f'Optional Santali STT -> {optional_santali}')
+    if not santali_present:
+        print('      Santali text translation/TTS still work. Install the gated ASR only for Santali speech input.')
+
     tts_support = ROOT / 'tts' / 'flan-t5-large'
     tokenizer_ok = tts_support.is_dir() and (tts_support / 'tokenizer_config.json').is_file() and (
         (tts_support / 'tokenizer.json').is_file() or (tts_support / 'spiece.model').is_file()

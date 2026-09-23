@@ -16,11 +16,13 @@ LANGUAGE_DESCRIPTIONS = {
     'eng_Latn': 'English',
     'hin_Deva': 'Hindi',
     'mar_Deva': 'Marathi',
+    'sat_Olck': 'Santali',
 }
 LANGUAGE_SPEAKERS = {
     'eng_Latn': 'Thoma',
     'hin_Deva': 'Rohit',
     'mar_Deva': 'Sanjay',
+    'sat_Olck': 'Arjun',
 }
 
 
@@ -44,6 +46,9 @@ class IndicParlerTTSAdapter:
         self._audio_cache: OrderedDict[tuple[str, str, str], tuple[bytes, int, float]] = OrderedDict()
         self._audio_cache_limit = 32
         self._description_cache: dict[tuple[str, str], tuple[Any, Any]] = {}
+        self._compile_enabled = os.getenv('PARLER_COMPILE', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+        self._max_output_seconds = max(4.0, float(os.getenv('PARLER_MAX_OUTPUT_SECONDS', '30')))
+        self._live_max_output_seconds = max(3.0, float(os.getenv('PARLER_LIVE_MAX_OUTPUT_SECONDS', '10')))
 
     def _resolve_description_path(self, configured: str) -> Path:
         candidates: list[Path] = []
@@ -101,28 +106,66 @@ class IndicParlerTTSAdapter:
             from transformers import AutoFeatureExtractor, AutoTokenizer
             device = torch.device('cpu' if self.cpu_only or not torch.cuda.is_available() else 'cuda')
             dtype = torch.float32 if device.type == 'cpu' else torch.float16
+            if device.type == 'cuda':
+                # Safe performance flags for NVIDIA laptop GPUs. These do not
+                # change model semantics and avoid some allocator fragmentation
+                # on 4 GB cards.
+                try:
+                    torch.backends.cuda.matmul.allow_tf32 = True
+                except Exception:
+                    pass
+                try:
+                    torch.backends.cudnn.allow_tf32 = True
+                except Exception:
+                    pass
             load_kwargs = {
                 'local_files_only': True,
                 'torch_dtype': dtype,
             }
+            # Transformers 4.46.1 + the FLAN-T5 encoder in this local Parler
+            # stack does not support SDPA cleanly. Use eager by default to avoid
+            # a failed first model construction on every API startup. Advanced
+            # users can opt into another implementation with PARLER_ATTENTION.
+            attention_impl = os.getenv('PARLER_ATTENTION', 'eager').strip() or 'eager'
+            load_kwargs['attn_implementation'] = attention_impl
             try:
                 model = ParlerTTSForConditionalGeneration.from_pretrained(
                     str(self.model_path),
-                    attn_implementation='sdpa',
                     **load_kwargs,
                 )
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                if attention_impl == 'eager':
+                    raise
+                load_kwargs['attn_implementation'] = 'eager'
                 model = ParlerTTSForConditionalGeneration.from_pretrained(
                     str(self.model_path),
                     **load_kwargs,
                 )
             model = model.to(device)
             model.eval()
+            if device.type == 'cuda' and self._compile_enabled:
+                model = self._maybe_compile(model)
             tokenizer = AutoTokenizer.from_pretrained(str(self.model_path), local_files_only=True)
             description_tokenizer = AutoTokenizer.from_pretrained(str(self.description_tokenizer_path), local_files_only=True)
             feature = AutoFeatureExtractor.from_pretrained(str(self.model_path), local_files_only=True)
             self._bundle = (model, tokenizer, description_tokenizer, feature, device)
             return self._bundle
+
+    @staticmethod
+    def _estimate_max_new_tokens(text: str, frame_rate: int, max_seconds: float) -> int:
+        words = max(1, len((text or '').split()))
+        # Approximate natural classroom delivery. The explicit cap prevents Parler
+        # from running away to long 20–30 s generations for short prompts.
+        estimated_seconds = min(max_seconds, max(2.5, words * 0.40 + 1.2))
+        return max(256, int(estimated_seconds * max(1, frame_rate)))
+
+    def _maybe_compile(self, model):
+        if not self._compile_enabled or not hasattr(torch, 'compile'):
+            return model
+        try:
+            return torch.compile(model, mode='reduce-overhead', dynamic=False)
+        except Exception:
+            return model
 
     @staticmethod
     def speaker_for(language: str) -> str:
@@ -133,8 +176,8 @@ class IndicParlerTTSAdapter:
         language_name = LANGUAGE_DESCRIPTIONS.get(language, 'English')
         chosen_speaker = speaker if speaker and speaker != 'classroom_teacher' else LANGUAGE_SPEAKERS.get(language, 'Rohit')
         return (
-            f'{chosen_speaker} speaks {language_name} clearly at a calm, moderate pace, '
-            'with a neutral classroom-teaching tone. The recording is high quality, clear and close, with no background noise.'
+            f'{chosen_speaker} speaks {language_name} clearly at a slightly fast natural pace. '
+            'The recording is very clear, close and without background noise.'
         )
 
     @staticmethod
@@ -241,6 +284,7 @@ class IndicParlerTTSAdapter:
         chunks = self._token_safe_prompt_chunks(text, tokenizer, budget=220)
         audio_chunks: list[np.ndarray] = []
         sampling_rate = int(feature.sampling_rate)
+        frame_rate = int(getattr(model.audio_encoder.config, 'frame_rate', 86))
         with torch.inference_mode():
             for chunk in chunks:
                 prompt_inputs = tokenizer(
@@ -255,6 +299,7 @@ class IndicParlerTTSAdapter:
                     prompt_attention_mask=prompt_inputs.attention_mask,
                     do_sample=False,
                     use_cache=True,
+                    max_new_tokens=self._estimate_max_new_tokens(chunk, frame_rate, self._max_output_seconds),
                     return_dict_in_generate=True,
                 )
                 if not hasattr(generation, 'sequences'):
@@ -346,6 +391,7 @@ class IndicParlerTTSAdapter:
                 'streamer': streamer,
                 'do_sample': False,
                 'use_cache': True,
+                'max_new_tokens': self._estimate_max_new_tokens(prompt_text, frame_rate, self._live_max_output_seconds),
                 'min_new_tokens': 10,
             }
 

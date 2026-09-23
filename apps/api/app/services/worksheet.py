@@ -10,7 +10,7 @@ def make_worksheet(lesson, version, translations=None, language_a=None, language
     texts = _translation_map(translations)
     source = version.clean_transcript or version.source_text
     language_a = language_a or lesson.source_language
-    targets = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva') if lang != language_a]
+    targets = [lang for lang in ('eng_Latn', 'hin_Deva', 'mar_Deva', 'sat_Olck') if lang != language_a]
     language_b = language_b or (targets[0] if targets else 'eng_Latn')
     target = texts.get(language_b, 'Translation not prepared yet.')
     english = texts.get('eng_Latn', source if lesson.source_language == 'eng_Latn' else 'Translation not prepared yet.')

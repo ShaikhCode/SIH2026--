@@ -15,6 +15,7 @@ import OfflinePage from './pages/OfflinePage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import NotFoundPage from './pages/NotFoundPage';
 import LiveTranslatePage from './pages/LiveTranslatePage';
+import ErrorBoundary from './components/ErrorBoundary';
 
 function Protected({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -24,7 +25,7 @@ function Protected({ children }: { children: ReactNode }) {
 
 
 export default function App() {
-  return <Routes>
+  return <ErrorBoundary><Routes>
     <Route path="/login" element={<LoginPage />} />
     <Route path="/register" element={<RegisterPage />} />
     <Route path="/" element={<LandingPage />} />
@@ -39,5 +40,5 @@ export default function App() {
     <Route path="/offline" element={<Protected><OfflinePage /></Protected>} />
     <Route path="/diagnostics" element={<Protected><DiagnosticsPage /></Protected>} />
     <Route path="*" element={<NotFoundPage />} />
-  </Routes>;
+  </Routes></ErrorBoundary>;
 }

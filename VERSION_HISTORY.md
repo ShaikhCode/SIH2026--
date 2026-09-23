@@ -1,8 +1,16 @@
-# Version history
+# BhashaSaathi Version History
 
-- V14 — baseline audited classroom web product.
-- V15 — translation/TTS cache and temporary-history audio replay.
-- V16 — background classroom audio and live playback fixes.
-- V17 — speed-focused API/translation path.
-- V18 — approval-driven background preparation and learning-outcome removal.
-- **V19 — long-text reliability + publish decoupling + flashcard removal.**
+## V25 — Final Product / Viva Stable
+- English default and source-only publish.
+- Hindi/Marathi optional targets.
+- Santali (`sat_Olck`) optional temporary language with no approval gate.
+- Persisted lesson source language.
+- Santali translation, TTS and optional IndicConformer STT routing.
+- Live language pair persistence + Swap.
+- Manual/cached audio; non-blocking Publish.
+- Idempotent preparation jobs and terminal failure/retry states.
+- Fixed Santali source STT routing and TTS queue language bug.
+- Removed silent English target injection.
+
+## V24
+- Deep reliability and Santali integration baseline.

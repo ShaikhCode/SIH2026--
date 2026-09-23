@@ -16,7 +16,7 @@ resume_pending_preparations()
 
 app = FastAPI(
     title='BhashaSaathi Local API',
-    version='18.0.0',
+    version=settings.app_version,
     description='Teacher-controlled multilingual classroom learning for SIH26042.',
 )
 app.add_middleware(
@@ -80,7 +80,7 @@ app.include_router(runtime.router, prefix='/api/v1')
 
 @app.get('/api/v1/health')
 def health():
-    return {'status': 'ok', 'product': 'BhashaSaathi', 'version': '18.0.0', 'mode': 'local'}
+    return {'status': 'ok', 'product': 'BhashaSaathi', 'version': settings.app_version, 'mode': 'local'}
 
 
 @app.get('/api/v1/health/models')

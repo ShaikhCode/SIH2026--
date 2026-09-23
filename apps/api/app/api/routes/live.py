@@ -30,8 +30,8 @@ async def warm(x: LiveWarmIn):
 
 @router.websocket('/translate')
 async def translate_socket(websocket: WebSocket):
-    source = websocket.query_params.get('source', 'hin_Deva')
-    target = websocket.query_params.get('target', 'mar_Deva')
+    source = websocket.query_params.get('source', 'eng_Latn')
+    target = websocket.query_params.get('target', 'hin_Deva')
     origin = websocket.headers.get('origin')
     allowed_origins = {item.strip() for item in settings.cors_origins.split(',') if item.strip()}
     if origin and origin not in allowed_origins:
@@ -39,7 +39,7 @@ async def translate_socket(websocket: WebSocket):
         return
     if source not in LIVE_LANGUAGES or target not in LIVE_LANGUAGES or source == target:
         await websocket.accept()
-        await websocket.send_text(json.dumps({'type': 'error', 'stage': 'config', 'message': 'Choose two different languages from English, Hindi and Marathi.'}, ensure_ascii=False))
+        await websocket.send_text(json.dumps({'type': 'error', 'stage': 'config', 'message': 'Choose two different languages from English, Hindi, Marathi, or Santali.'}, ensure_ascii=False))
         await websocket.close(code=1008)
         return
 

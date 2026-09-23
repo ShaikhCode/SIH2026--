@@ -17,7 +17,7 @@ if not _thread_setting:
 
 import torch
 
-from ..adapters.stt import FasterWhisperAdapter
+from ..adapters.stt import FasterWhisperAdapter, IndicConformerAdapter
 from ..adapters.translation import IndicTrans2Adapter
 from ..adapters.tts import IndicParlerTTSAdapter
 from ..core.config import MODELS_ROOT, settings
@@ -49,9 +49,13 @@ class ModelManager:
         except Exception:
             pass
         self._registry_lock = threading.RLock()
+        self.translation_cpu_only = settings.cpu_only or settings.translation_cpu_only
+        self.stt_cpu_only = settings.cpu_only or settings.stt_cpu_only
+        self.tts_cpu_only = settings.cpu_only or settings.tts_cpu_only
+        self.santali_stt_cpu_only = settings.cpu_only or settings.santali_stt_cpu_only
         self.translation = IndicTrans2Adapter(
             MODELS_ROOT,
-            settings.cpu_only,
+            self.translation_cpu_only,
             settings.max_translation_chars,
             text_beams=settings.text_translation_beams,
             route_cache_limit=settings.translation_route_cache_limit,
@@ -61,8 +65,12 @@ class ModelManager:
             batch_size=settings.translation_batch_size,
             inference_lock_enabled=settings.translation_inference_lock,
         )
-        self.stt = FasterWhisperAdapter(MODELS_ROOT, settings.cpu_only)
-        self.tts = IndicParlerTTSAdapter(MODELS_ROOT, settings.cpu_only, settings.parler_description_tokenizer)
+        self.stt = FasterWhisperAdapter(MODELS_ROOT, self.stt_cpu_only)
+        self.santali_stt = IndicConformerAdapter(
+            Path(settings.santali_stt_model_dir) if Path(settings.santali_stt_model_dir).is_absolute() else MODELS_ROOT.parent / settings.santali_stt_model_dir.lstrip('./'),
+            self.santali_stt_cpu_only,
+        )
+        self.tts = IndicParlerTTSAdapter(MODELS_ROOT, self.tts_cpu_only, settings.parler_description_tokenizer)
         self.last_error: dict[str, str] | None = None
 
     def status(self) -> dict[str, Any]:
@@ -80,7 +88,9 @@ class ModelManager:
             'translation': self.translation.health(),
             'translation_loaded': self.translation.loaded(),
             'stt': self.stt.health(),
+            'santali_stt': self.santali_stt.health() if settings.santali_stt_enabled else False,
             'stt_loaded': self.stt.loaded(),
+            'santali_stt_loaded': self.santali_stt.loaded(),
             'tts': self.tts.health(),
             'last_error': self.last_error,
             'performance': {
@@ -92,6 +102,10 @@ class ModelManager:
                 'translation_batch_size': settings.translation_batch_size,
                 'live_translation_max_new_tokens': settings.live_translation_max_new_tokens,
                 'torch_threads': torch.get_num_threads(),
+                'translation_device_policy': 'cpu' if self.translation_cpu_only else 'auto',
+                'stt_device_policy': 'cpu' if self.stt_cpu_only else 'auto',
+                'tts_device_policy': 'cpu' if self.tts_cpu_only else 'auto',
+                'santali_stt_device_policy': 'cpu' if self.santali_stt_cpu_only else 'auto',
                 'live_segment_ms': settings.max_live_segment_ms,
                 'live_queue_size': settings.live_queue_size,
                 'live_tts_stream_seconds': settings.live_tts_stream_seconds,
@@ -118,6 +132,8 @@ class ModelManager:
 
     def transcribe(self, audio_path: Path, language: str | None = 'hi') -> dict:
         try:
+            if language == 'sat_Olck' and settings.santali_stt_enabled:
+                return self.santali_stt.transcribe(audio_path)
             return self.stt.transcribe(audio_path, language)
         except Exception as exc:
             self._record_error('stt', exc)
@@ -125,6 +141,8 @@ class ModelManager:
 
     def transcribe_audio(self, audio, language: str | None = None) -> dict:
         try:
+            if language == 'sat_Olck' and settings.santali_stt_enabled:
+                return self.santali_stt.transcribe_audio(audio)
             return self.stt.transcribe_audio(audio, language)
         except Exception as exc:
             self._record_error('stt', exc)
@@ -160,7 +178,10 @@ class ModelManager:
     def warm_live(self, src: str, tgt: str) -> dict[str, Any]:
         """Load only what the live pipeline needs; loading is idempotent."""
         results: dict[str, Any] = {'source': src, 'target': tgt}
-        self.stt.warm()
+        if src == 'sat_Olck' and settings.santali_stt_enabled:
+            self.santali_stt.warm()
+        else:
+            self.stt.warm()
         results['stt'] = True
         if src != tgt:
             results['translation'] = self.translation.warm(src, tgt, beams=settings.live_translation_beams, max_new_tokens=settings.live_translation_max_new_tokens)
@@ -174,6 +195,7 @@ class ModelManager:
         with self._registry_lock:
             self.translation.unload()
             self.stt.unload()
+            self.santali_stt.unload()
             self.tts.unload()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

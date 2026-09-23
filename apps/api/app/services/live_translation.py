@@ -19,9 +19,10 @@ from ..core.config import settings
 from .model_manager import manager
 
 LIVE_LANGUAGES = {
-    'eng_Latn': {'name': 'English', 'native': 'English', 'whisper': 'en'},
-    'hin_Deva': {'name': 'Hindi', 'native': 'हिन्दी', 'whisper': 'hi'},
-    'mar_Deva': {'name': 'Marathi', 'native': 'मराठी', 'whisper': 'mr'},
+    'eng_Latn': {'name': 'English', 'native': 'English', 'whisper': 'en', 'stt_engine': 'whisper'},
+    'hin_Deva': {'name': 'Hindi', 'native': 'हिन्दी', 'whisper': 'hi', 'stt_engine': 'whisper'},
+    'mar_Deva': {'name': 'Marathi', 'native': 'मराठी', 'whisper': 'mr', 'stt_engine': 'whisper'},
+    'sat_Olck': {'name': 'Santali', 'native': 'ᱥᱟᱱᱛᱟᱲᱤ', 'whisper': None, 'stt_engine': 'indic-conformer'},
 }
 
 LIVE_RATE = 16_000
@@ -93,7 +94,7 @@ def resample_to_16k(audio: np.ndarray, source_rate: int) -> np.ndarray:
 class LiveTranslationSession:
     def __init__(self, source: str, target: str, loop: asyncio.AbstractEventLoop) -> None:
         if source not in LIVE_LANGUAGES or target not in LIVE_LANGUAGES:
-            raise ValueError('Live Translate currently supports English, Hindi and Marathi only.')
+            raise ValueError('Choose two supported languages: English, Hindi, Marathi, or Santali.')
         if source == target:
             raise ValueError('Choose two different languages for Live Translate.')
         self.source = source
@@ -226,7 +227,8 @@ class LiveTranslationSession:
             self._reset_segmenter()
             return
 
-        if self._utterance_ms >= settings.max_live_segment_ms:
+        max_segment_ms = settings.live_max_segment_ms_santali if self.source == 'sat_Olck' else settings.max_live_segment_ms
+        if self._utterance_ms >= max_segment_ms:
             combined = np.concatenate(self._speech_chunks).astype(np.float32)
             cut = self._live_boundary(combined)
             self._emit_audio_segment(combined[:cut], self._speech_start_at or time.perf_counter())
@@ -453,7 +455,7 @@ class LiveTranslationSession:
 
 async def warm_live_models(source: str, target: str) -> dict[str, Any]:
     if source not in LIVE_LANGUAGES or target not in LIVE_LANGUAGES:
-        raise ValueError('Live Translate currently supports English, Hindi and Marathi only.')
+        raise ValueError('Choose two supported languages: English, Hindi, Marathi, or Santali.')
     if source == target:
         raise ValueError('Choose two different languages.')
     started = time.perf_counter()

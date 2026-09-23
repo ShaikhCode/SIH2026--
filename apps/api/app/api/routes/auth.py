@@ -12,7 +12,7 @@ def user_view(u): return {'id':u.id,'name':u.name,'email':u.email,'preferred_lan
 @router.post('/register')
 def register(x:RegisterIn, db:Session=Depends(get_db)):
     if db.query(User).filter_by(email=x.email.lower()).first(): raise HTTPException(409, detail={'code':'EMAIL_EXISTS','message':'Email is already registered.'})
-    u=User(name=x.name.strip(),email=x.email.lower(),password_hash=hash_password(x.password),preferred_language='hin_Deva',account_role='user')
+    u=User(name=x.name.strip(),email=x.email.lower(),password_hash=hash_password(x.password),preferred_language='eng_Latn',account_role='user')
     db.add(u); db.commit(); db.refresh(u)
     return {'access_token':create_access_token(u),'user':user_view(u)}
 

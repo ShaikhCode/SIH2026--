@@ -14,6 +14,9 @@ def _script_ok(text: str, language: str) -> bool:
         return any('\u0900' <= ch <= '\u097f' for ch in text) or not text.strip()
     if language == 'mar_Deva':
         return any('\u0900' <= ch <= '\u097f' for ch in text) or not text.strip()
+    if language == 'sat_Olck':
+        # Ol Chiki Unicode block: U+1C50–U+1C7F. Allow punctuation/digits/space around it.
+        return any('\u1c50' <= ch <= '\u1c7f' for ch in text) or not text.strip()
     return True
 
 def validate_translation(source: str, target: str, source_language: str, target_language: str, concepts: list[Concept]) -> TranslationValidation:

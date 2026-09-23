@@ -1,7 +1,7 @@
 from typing import Any, Literal
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
-LanguageCode = Literal['eng_Latn', 'hin_Deva', 'mar_Deva']
+LanguageCode = Literal['eng_Latn', 'hin_Deva', 'mar_Deva', 'sat_Olck']
 
 
 class RegisterIn(BaseModel):
@@ -28,7 +28,7 @@ class JoinIn(BaseModel):
 class LessonCreateIn(BaseModel):
     title: str = Field(min_length=2, max_length=200)
     source_text: str = Field(default='', max_length=20000)
-    source_language: LanguageCode = 'hin_Deva'
+    source_language: LanguageCode = 'eng_Latn'
     grade: str = Field(default='Grade 2', min_length=1, max_length=50)
     subject: str = Field(default='Environmental Studies', min_length=1, max_length=100)
     topic: str = Field(default='', max_length=160)
@@ -67,7 +67,7 @@ class VerifyIn(BaseModel):
 
 
 class PracticeGenerateIn(BaseModel):
-    language: LanguageCode = 'hin_Deva'
+    language: LanguageCode = 'eng_Latn'
     count: int = Field(default=4, ge=1, le=10)
 
 
@@ -79,7 +79,7 @@ class AttemptIn(BaseModel):
     model_config = ConfigDict(extra='forbid')
     lesson_id: int
     lesson_version_id: int | None = None
-    language: LanguageCode = 'hin_Deva'
+    language: LanguageCode = 'eng_Latn'
     answers: dict[str, Any] = Field(default_factory=dict)
     offline_created_at: str | None = None
 
@@ -95,14 +95,14 @@ class SyncPushIn(BaseModel):
 
 
 class TTSIn(BaseModel):
-    target_language: LanguageCode = 'mar_Deva'
+    target_language: LanguageCode = 'hin_Deva'
     speaker: str = Field(default='classroom_teacher', min_length=1, max_length=100)
 
 
 
 class LiveWarmIn(BaseModel):
-    source_language: LanguageCode = 'hin_Deva'
-    target_language: LanguageCode = 'mar_Deva'
+    source_language: LanguageCode = 'eng_Latn'
+    target_language: LanguageCode = 'hin_Deva'
 
 
 class WarmTranslationIn(BaseModel):

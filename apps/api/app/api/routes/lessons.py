@@ -3,9 +3,10 @@ import json
 import logging
 import secrets
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -29,7 +30,7 @@ from ...services.content import analyze_source, ensure_practice, concepts_as_jso
 from ...services.model_manager import manager
 from ...services.publish import publish
 from ...services.worksheet import make_worksheet
-from ...services.background_prep import enqueue_translation_approved, enqueue_retry, preparation_views
+from ...services.background_prep import enqueue_retry, preparation_views
 from ...layer2.concepts import extract_concepts
 from ...layer2.normalizer import normalize_text
 
@@ -102,6 +103,7 @@ def version_view(version: LessonVersion) -> dict:
 
 
 def _practice_view(question: PracticeQuestion) -> dict:
+    """Full practice view for teacher-side lesson management (includes correct_answer)."""
     return {
         'id': question.id,
         'concept_id': question.concept_id,
@@ -109,6 +111,22 @@ def _practice_view(question: PracticeQuestion) -> dict:
         'options': json.loads(question.options_json or '[]'),
         'correct_answer': question.correct_answer,
         'explanation': question.explanation,
+        'language': question.language,
+        'question_type': question.question_type,
+        'approved': bool(question.approved),
+    }
+
+
+def _practice_student_view(question: PracticeQuestion) -> dict:
+    """Student-safe practice view. Never includes correct_answer or explanation.
+
+    Evaluation is always performed server-side via POST /student/attempts.
+    """
+    return {
+        'id': question.id,
+        'concept_id': question.concept_id,
+        'prompt': question.prompt,
+        'options': json.loads(question.options_json or '[]'),
         'language': question.language,
         'question_type': question.question_type,
         'approved': bool(question.approved),
@@ -152,6 +170,10 @@ def pack(db: Session, lesson: Lesson, *, include_pending: bool = False, viewer_i
         }
         for item in translations
     ]
+    # Use student-safe practice views whenever a specific viewer is identified
+    # (i.e. a student is requesting the lesson). The student view never includes
+    # correct_answer or explanation — evaluation happens server-side.
+    practice_view_fn = _practice_student_view if viewer_id is not None else _practice_view
     return {
         'lesson': lesson_summary(db, lesson),
         'version': version_view(version),
@@ -170,7 +192,7 @@ def pack(db: Session, lesson: Lesson, *, include_pending: bool = False, viewer_i
             }
             for artifact in artifacts
         ],
-        'practice': [_practice_view(q) for q in visible_questions if q.approved],
+        'practice': [practice_view_fn(q) for q in visible_questions if q.approved],
         'practice_all': [_practice_view(q) for q in all_questions] if include_pending else [],
         'preparations': preparation_views(db, version.id),
     }
@@ -291,11 +313,17 @@ def patch_lesson(lesson_id: int, x: LessonPatchIn, db: Session = Depends(get_db)
         or (x.concepts is not None and incoming_concepts != existing_concepts)
     )
     if source_changed:
-        # Generated translations, practice and audio belong to the exact active source/version.
-        # If the educator changes source meaning, never leave stale learner-facing artifacts behind.
+        # Generated translations, practice, audio and preparation jobs belong to
+        # the exact source/version. Invalidate all downstream work before saving
+        # the new source so old workers cannot publish stale derivative assets.
         db.query(Translation).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
         db.query(Artifact).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
         db.query(PracticeQuestion).filter_by(lesson_version_id=version.id).delete(synchronize_session=False)
+        jobs = db.query(PreparationJob).filter_by(lesson_version_id=version.id).all()
+        for job in jobs:
+            job.status = 'FAILED'
+            job.error = 'Preparation invalidated because the lesson source changed.'
+            job.finished_at = datetime.now(timezone.utc)
 
     if x.title is not None:
         lesson.title = x.title.strip()
@@ -534,9 +562,9 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
     row.confidence = validation['confidence']
     row.flags_json = json.dumps(validation['flags'], ensure_ascii=False)
     row.validation_json = json.dumps(validation, ensure_ascii=False)
-    row.verification_status = 'UNVERIFIED'
+    row.verification_status = 'TEMPORARY' if x.target_language == 'sat_Olck' else 'UNVERIFIED'
     row.teacher_edited = False
-    row.native_review_status = 'NOT_REVIEWED'
+    row.native_review_status = 'NOT_REQUIRED' if x.target_language == 'sat_Olck' else 'NOT_REVIEWED'
     lesson.status = 'FLAGGED' if validation['flags'] else 'TRANSLATED'
     db.commit()
     db.refresh(row)
@@ -544,7 +572,7 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
 
 
 @router.post('/lessons/{lesson_id}/verify-translation')
-def verify_translation(lesson_id: int, x: VerifyIn, background_tasks: BackgroundTasks, db: Session = Depends(get_db), user=Depends(current_user)):
+def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db), user=Depends(current_user)):
     """Approve only the text. Everything downstream is prepared asynchronously."""
     started = time.perf_counter()
     lesson = db_lesson(db, lesson_id)
@@ -578,13 +606,9 @@ def verify_translation(lesson_id: int, x: VerifyIn, background_tasks: Background
     if x.native_review_status is not None:
         translation.native_review_status = x.native_review_status
 
-    translation.verification_status = 'TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'
+    translation.verification_status = ('TEMPORARY' if translation.target_language == 'sat_Olck' and x.approved else ('TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'))
     lesson.status = 'TEACHER_APPROVED' if x.approved else 'FLAGGED'
     db.commit()
-    if x.approved:
-        # The HTTP response is deliberately tiny and fast. Audio/practice are
-        # queued only after the approved text is safely committed.
-        background_tasks.add_task(enqueue_translation_approved, lesson.id, version.id, translation.target_language)
     return {
         'translation_id': translation.id,
         'language': translation.target_language,
@@ -595,6 +619,39 @@ def verify_translation(lesson_id: int, x: VerifyIn, background_tasks: Background
         'response_ms': round((time.perf_counter() - started) * 1000),
     }
 
+
+
+@router.post('/lessons/{lesson_id}/translation/{translation_id}/temporary')
+def save_temporary_translation(lesson_id: int, translation_id: int, payload: dict, db: Session = Depends(get_db), user=Depends(current_user)):
+    lesson = db_lesson(db, lesson_id)
+    require_group_owner(db, lesson, user)
+    version = current_version(db, lesson)
+    translation = db.get(Translation, translation_id)
+    if not translation or translation.lesson_version_id != version.id:
+        raise HTTPException(404, detail={'code': 'TRANSLATION_NOT_FOUND', 'message': 'Translation not found.'})
+    if translation.target_language != 'sat_Olck':
+        raise HTTPException(400, detail={'code': 'TEMPORARY_LANGUAGE_REQUIRED', 'message': 'Temporary save is only available for Santali.'})
+    text = str(payload.get('edited_text') or translation.translated_text or '').strip()
+    if not text:
+        raise HTTPException(400, detail={'code': 'TRANSLATION_EMPTY', 'message': 'Temporary translation cannot be empty.'})
+    if text != translation.translated_text.strip():
+        validation = Layer2Engine(manager.translate).validate_translation(
+            version.clean_transcript or version.source_text,
+            text,
+            translation.source_language,
+            translation.target_language,
+            {'concepts': json.loads(version.concepts_json or '[]')},
+        )
+        translation.confidence = validation['confidence']
+        translation.flags_json = json.dumps(validation['flags'], ensure_ascii=False)
+        translation.validation_json = json.dumps(validation, ensure_ascii=False)
+        db.query(Artifact).filter_by(lesson_version_id=version.id, type='audio', language='sat_Olck').delete(synchronize_session=False)
+    translation.translated_text = text
+    translation.teacher_edited = True
+    translation.verification_status = 'TEMPORARY'
+    translation.native_review_status = 'NOT_REQUIRED'
+    db.commit()
+    return {'translation_id': translation.id, 'language': translation.target_language, 'text': translation.translated_text, 'verification_status': translation.verification_status, 'native_review_status': translation.native_review_status}
 
 @router.post('/lessons/{lesson_id}/translation/{translation_id}/back-translate')
 def back_translate(lesson_id: int, translation_id: int, db: Session = Depends(get_db), user=Depends(current_user)):
@@ -640,7 +697,7 @@ def queue_tts_preparation(lesson_id: int, language: str, db: Session = Depends(g
     lesson = db_lesson(db, lesson_id)
     require_group_owner(db, lesson, user)
     version = current_version(db, lesson)
-    allowed = {'eng_Latn', 'hin_Deva', 'mar_Deva'}
+    allowed = {'eng_Latn', 'hin_Deva', 'mar_Deva', 'sat_Olck'}
     if language not in allowed:
         raise HTTPException(400, detail={'code': 'LANGUAGE_UNSUPPORTED', 'message': 'Unsupported lesson language.'})
     if language == lesson.source_language:
@@ -651,10 +708,10 @@ def queue_tts_preparation(lesson_id: int, language: str, db: Session = Depends(g
         translation = db.query(Translation).filter_by(lesson_version_id=version.id, target_language=language).first()
         if not translation or not translation.translated_text.strip():
             raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'Prepare the language translation first.'})
-        if translation.verification_status != 'TEACHER_APPROVED':
+        if translation.verification_status != 'TEACHER_APPROVED' and not (language == 'sat_Olck' and translation.verification_status == 'TEMPORARY'):
             raise HTTPException(400, detail={'code': 'TTS_REVIEW_REQUIRED', 'message': 'Approve the translation before generating student-facing audio.'})
-    job_id = enqueue_retry(version.id, 'tts', language)
-    return {'job_id': job_id, 'status': 'QUEUED', 'kind': 'tts', 'language': language}
+    job_id, status = enqueue_retry(version.id, 'tts', language)
+    return {'job_id': job_id, 'status': status, 'kind': 'tts', 'language': language}
 
 
 @router.post('/lessons/{lesson_id}/preparations/{job_id}/retry')
@@ -666,8 +723,8 @@ def retry_preparation(lesson_id: int, job_id: int, db: Session = Depends(get_db)
     job = db.get(PreparationJob, job_id)
     if not job or job.lesson_version_id != version.id:
         raise HTTPException(404, detail={'code': 'PREPARATION_NOT_FOUND', 'message': 'Preparation job not found.'})
-    new_id = enqueue_retry(version.id, job.kind, job.language)
-    return {'job_id': new_id, 'status': 'QUEUED', 'kind': job.kind, 'language': job.language}
+    new_id, status = enqueue_retry(version.id, job.kind, job.language)
+    return {'job_id': new_id, 'status': status, 'kind': job.kind, 'language': job.language}
 
 
 @router.post('/lessons/{lesson_id}/generate-practice')
@@ -722,8 +779,9 @@ async def transcribe(lesson_id: int, file: UploadFile = File(...), db: Session =
     path = folder / (secrets.token_hex(12) + suffix)
     path.write_bytes(data)
     try:
-        stt_language = {'hin_Deva': 'hi', 'eng_Latn': 'en', 'mar_Deva': None}.get(lesson.source_language)
-        result = manager.transcribe(path, stt_language)
+        # Pass the canonical app language code so the ModelManager can route
+        # Santali to IndicConformer instead of accidentally sending it to Whisper.
+        result = manager.transcribe(path, lesson.source_language)
     except Exception as exc:
         logger.exception('STT failed lesson_id=%s', lesson_id)
         raise HTTPException(503, detail={'code': 'STT_FAILED', 'message': 'Speech recognition failed. You can edit the transcript manually or retry.', 'details': {'runtime_error': str(exc)[:600]}, 'retryable': True}) from exc
@@ -746,7 +804,7 @@ def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(cu
     else:
         if not translation:
             raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'Prepare this language translation before generating audio.'})
-        if translation.verification_status != 'TEACHER_APPROVED':
+        if translation.verification_status != 'TEACHER_APPROVED' and not (x.target_language == 'sat_Olck' and translation.verification_status == 'TEMPORARY'):
             raise HTTPException(400, detail={'code': 'TTS_REVIEW_REQUIRED', 'message': 'Approve the translation before generating student-facing audio.'})
         text = translation.translated_text
     if not text.strip():
@@ -794,7 +852,7 @@ def do_publish(lesson_id: int, db: Session = Depends(get_db), user=Depends(curre
     version = current_version(db, lesson)
     ok, problems = publish(db, lesson, version)
     if not ok:
-        raise HTTPException(400, detail={'code': 'PUBLISH_BLOCKED', 'message': 'Publish is blocked until the lesson package is complete and approved.', 'details': {'problems': problems}})
+        raise HTTPException(400, detail={'code': 'PUBLISH_BLOCKED', 'message': 'Publish is blocked until the lesson has valid source content.', 'details': {'problems': problems}})
     return pack(db, lesson, include_pending=True)
 
 
