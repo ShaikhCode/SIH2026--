@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import threading
 from datetime import datetime, timezone, timedelta
 
@@ -27,6 +28,15 @@ _submitted_jobs: set[int] = set()
 
 def _now():
     return datetime.now(timezone.utc)
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 
 
 def _ensure_job(db, version_id: int, kind: str, language: str = '') -> PreparationJob:
@@ -75,7 +85,21 @@ def enqueue_retry(version_id: int, kind: str, language: str = '') -> tuple[int, 
     db = SessionLocal()
     try:
         job = _ensure_job(db, version_id, kind, language)
-        if job.status in {'QUEUED', 'RUNNING', 'READY'}:
+        if kind == 'tts':
+            existing_art = db.query(Artifact).filter_by(
+                lesson_version_id=version_id, type='audio', language=language
+            ).first()
+            if existing_art and Path(existing_art.path).is_file() and Path(existing_art.path).stat().st_size > 0:
+                if job.status != 'READY':
+                    job.status = 'READY'
+                    job.error = None
+                    job.finished_at = _now()
+                    db.commit()
+                return job.id, 'READY'
+
+        if job.status in {'QUEUED', 'RUNNING'}:
+            job_id, status = job.id, job.status
+        elif job.status == 'READY':
             job_id, status = job.id, job.status
         else:
             job.status = 'QUEUED'
@@ -125,8 +149,11 @@ def _run_tts(db: SessionLocal, job: PreparationJob, lesson: Lesson, version: Les
     key = hashlib.sha256((text + '|' + lang + '|' + speaker + '|v6').encode('utf-8')).hexdigest()
     path = cache / f'{key}.wav'
 
-    if not path.exists():
+    if not path.exists() or path.stat().st_size == 0:
         manager.synthesize(text, path, lang, speaker)
+
+    if not path.is_file() or path.stat().st_size == 0:
+        raise RuntimeError(f'TTS audio generation failed for {lang}: output file is missing or empty.')
 
     # The lesson may have changed while inference was running. Re-read the
     # authoritative source/translation before attaching the artifact.
@@ -148,7 +175,7 @@ def _run_tts(db: SessionLocal, job: PreparationJob, lesson: Lesson, version: Les
     existing = db.query(Artifact).filter_by(
         lesson_version_id=version.id, type='audio', language=lang,
     ).first()
-    if existing and existing.sha256 == digest:
+    if existing and existing.sha256 == digest and Path(existing.path).is_file():
         return
     if existing:
         db.delete(existing)
@@ -217,10 +244,11 @@ def _expire_stale_jobs(db) -> None:
     rows = db.query(PreparationJob).filter(PreparationJob.status == 'RUNNING').all()
     changed = False
     for row in rows:
-        if not row.started_at:
+        started = _to_utc(row.started_at)
+        if not started:
             continue
         limit = int(settings.preparation_tts_timeout_s if row.kind == 'tts' else settings.preparation_practice_timeout_s)
-        if (now - row.started_at) > timedelta(seconds=limit):
+        if (now - started) > timedelta(seconds=limit):
             row.status = 'FAILED'
             row.error = f'{row.kind.upper()} job exceeded the {limit}s safety timeout. Press Retry to run it again.'
             row.finished_at = now
@@ -239,12 +267,13 @@ def preparation_views(db, version_id: int) -> list[dict]:
             'language': row.language,
             'status': row.status,
             'error': row.error,
-            'created_at': row.created_at.isoformat() if row.created_at else None,
-            'started_at': row.started_at.isoformat() if row.started_at else None,
-            'finished_at': row.finished_at.isoformat() if row.finished_at else None,
+            'created_at': _to_utc(row.created_at).isoformat() if row.created_at else None,
+            'started_at': _to_utc(row.started_at).isoformat() if row.started_at else None,
+            'finished_at': _to_utc(row.finished_at).isoformat() if row.finished_at else None,
         }
         for row in rows
     ]
+
 
 
 def resume_pending_preparations() -> None:
@@ -252,13 +281,20 @@ def resume_pending_preparations() -> None:
     try:
         rows = db.query(PreparationJob).filter(PreparationJob.status.in_(['QUEUED', 'RUNNING'])).all()
         for row in rows:
-            # Never resurrect heavy work after an API restart. Audio and practice
-            # are explicit user actions in the product-ready flow. The UI exposes
-            # a single Retry/Generate action which creates one idempotent job.
+            if row.kind == 'tts':
+                art = db.query(Artifact).filter_by(
+                    lesson_version_id=row.lesson_version_id, type='audio', language=row.language
+                ).first()
+                if art and Path(art.path).is_file() and Path(art.path).stat().st_size > 0:
+                    row.status = 'READY'
+                    row.error = None
+                    row.finished_at = _now()
+                    continue
             row.status = 'FAILED'
-            row.error = f'{row.kind.upper()} generation is manual. Press Generate to run it.'
+            row.error = f'{row.kind.upper()} generation was interrupted by process restart. Press Generate or Retry to run it.'
             row.started_at = None
             row.finished_at = _now()
         db.commit()
     finally:
         db.close()
+

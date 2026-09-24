@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import io
+import logging
 import os
 import queue
 import threading
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from typing import Any
 import numpy as np
 import soundfile as sf
 import torch
+
+logger = logging.getLogger('bhashasaathi.tts')
 
 LANGUAGE_DESCRIPTIONS = {
     'eng_Latn': 'English',
@@ -24,6 +28,7 @@ LANGUAGE_SPEAKERS = {
     'mar_Deva': 'Sanjay',
     'sat_Olck': 'Arjun',
 }
+
 
 
 class IndicParlerTTSAdapter:
@@ -292,11 +297,17 @@ class IndicParlerTTSAdapter:
                     return_tensors='pt',
                     truncation=False,
                 ).to(device)
+                decoder_attention_mask = torch.ones(
+                    (1, 1),
+                    device=device,
+                    dtype=prompt_inputs.attention_mask.dtype,
+                )
                 generation = model.generate(
                     input_ids=description_ids,
                     attention_mask=description_mask,
                     prompt_input_ids=prompt_inputs.input_ids,
                     prompt_attention_mask=prompt_inputs.attention_mask,
+                    decoder_attention_mask=decoder_attention_mask,
                     do_sample=False,
                     use_cache=True,
                     max_new_tokens=self._estimate_max_new_tokens(chunk, frame_rate, self._max_output_seconds),
@@ -310,6 +321,7 @@ class IndicParlerTTSAdapter:
                 array = audio.to(torch.float32).detach().cpu().numpy().reshape(-1)
                 if array.size:
                     audio_chunks.append(array)
+                del generation, prompt_inputs, decoder_attention_mask
         if not audio_chunks:
             raise RuntimeError('Indic Parler-TTS produced empty audio.')
         return np.concatenate(audio_chunks).astype(np.float32), sampling_rate
@@ -388,6 +400,11 @@ class IndicParlerTTSAdapter:
                 'attention_mask': description_mask,
                 'prompt_input_ids': prompt_inputs.input_ids,
                 'prompt_attention_mask': prompt_inputs.attention_mask,
+                'decoder_attention_mask': torch.ones(
+                    (1, 1),
+                    device=device,
+                    dtype=prompt_inputs.attention_mask.dtype,
+                ),
                 'streamer': streamer,
                 'do_sample': False,
                 'use_cache': True,
@@ -460,13 +477,36 @@ class IndicParlerTTSAdapter:
         return value
 
     def synthesize(self, text: str, out_path: Path, language: str, speaker: str = 'classroom_teacher') -> dict:
+        t0 = time.perf_counter()
         data, sampling_rate, duration = self.synthesize_bytes(text, language, speaker)
+        out_path = Path(out_path).resolve()
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(data)
+
+        # Artifact validation
+        if not out_path.is_file() or out_path.stat().st_size == 0:
+            raise RuntimeError(f'TTS synthesis failed to write audio file: {out_path}')
+        with sf.SoundFile(out_path) as f:
+            if f.frames == 0 or f.samplerate != sampling_rate or f.channels != 1:
+                out_path.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f'Invalid WAV produced: frames={f.frames}, samplerate={f.samplerate}, channels={f.channels}'
+                )
+
+        total_s = time.perf_counter() - t0
+        rtf = total_s / duration if duration > 0 else 0
+        vram_mb = torch.cuda.memory_allocated() / (1024**2) if torch.cuda.is_available() else 0
+        logger.info(
+            '[TTS] lang=%s speaker=%s dur=%.2fs total=%.2fs RTF=%.2fx VRAM=%.1fMB path=%s',
+            language, speaker, duration, total_s, rtf, vram_mb, out_path.name,
+        )
         return {
             'path': str(out_path),
             'sample_rate': sampling_rate,
             'duration_seconds': round(duration, 2),
+            'rtf': round(rtf, 2),
+            'generation_time': round(total_s, 2),
+            'size_bytes': out_path.stat().st_size,
         }
 
     def warm(self) -> None:

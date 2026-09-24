@@ -148,6 +148,22 @@ export default function LessonBuilderPage() {
     Object.values(artifactUrls).forEach((url) => URL.revokeObjectURL(url));
   }, []);
 
+  // Pre-fetch blob URLs for all ready audio artifacts so audio player is immediately playable
+  useEffect(() => {
+    if (!pack?.artifacts) return;
+    const audioArtifacts = pack.artifacts.filter((item) => item.type === 'audio');
+    audioArtifacts.forEach((item) => {
+      if (!artifactUrls[item.id]) {
+        api.fetchArtifact(item.id)
+          .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            setArtifactUrls((old) => ({ ...old, [item.id]: url }));
+          })
+          .catch(() => undefined);
+      }
+    });
+  }, [pack?.artifacts, artifactUrls]);
+
 
   useEffect(() => {
     if (!hydrated.current) return;
@@ -675,7 +691,7 @@ export default function LessonBuilderPage() {
                       <div><strong>{label(lang)}</strong><small>{state === 'ready' ? 'Audio ready' : state === 'generating' ? 'Generating in background…' : state === 'queued' ? 'Queued in background…' : state === 'error' ? (audioErrors[lang] || 'Generation failed') : 'Waiting for usable text'}</small></div>
                       <div className="button-row">
                         {state === 'ready' && artifact ? <>
-                          <audio id={`lesson-audio-${lang}`} controls preload="none" />
+                          <audio id={`lesson-audio-${lang}`} controls preload="metadata" src={artifactUrls[artifact.id]} />
                           <Button variant="secondary" onClick={() => void playArtifact(lang)}><Play size={14} /> Hear</Button>
                         </> : state === 'error' ? <Button variant="secondary" disabled={disabled} onClick={() => {
                           if (!job) { void queueAudio(lang); return; }
