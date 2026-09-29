@@ -22,11 +22,22 @@ LANGUAGE_DESCRIPTIONS = {
     'mar_Deva': 'Marathi',
     'sat_Olck': 'Santali',
 }
+
 LANGUAGE_SPEAKERS = {
     'eng_Latn': 'Thoma',
-    'hin_Deva': 'Rohit',
-    'mar_Deva': 'Sanjay',
-    'sat_Olck': 'Arjun',
+    'hin_Deva': 'Rani',
+    'mar_Deva': 'Sunita',
+    'sat_Olck': 'Rani',
+}
+
+SPEAKER_DESCRIPTIONS = {
+    'Thoma': "Thoma's voice is clear, with a close-sounding recording and excellent quality.",
+    'Mary': "Mary speaks clearly at a moderate pace in a high quality recording.",
+    'Rani': "Rani speaks with a high-pitched, clear voice in a close recording.",
+    'Aman': "Aman speaks in a clear voice with a close recording and high quality.",
+    'Sunita': "Sunita speaks clearly in a close-sounding environment with high quality.",
+    'Isha': "Isha speaks clearly in a high quality recording.",
+    'Arjun': "Arjun speaks clearly with a close recording.",
 }
 
 
@@ -172,16 +183,18 @@ class IndicParlerTTSAdapter:
         except Exception:
             return model
 
-    @staticmethod
-    def speaker_for(language: str) -> str:
-        return LANGUAGE_SPEAKERS.get(language, 'Rohit')
+    @classmethod
+    def speaker_for(cls, language: str) -> str:
+        return LANGUAGE_SPEAKERS.get(language, 'Rani')
 
-    @staticmethod
-    def _description(language: str, speaker: str) -> str:
+    @classmethod
+    def _description(cls, language: str, speaker: str) -> str:
+        chosen_speaker = speaker if speaker and speaker != 'classroom_teacher' else cls.speaker_for(language)
+        if chosen_speaker in SPEAKER_DESCRIPTIONS:
+            return SPEAKER_DESCRIPTIONS[chosen_speaker]
         language_name = LANGUAGE_DESCRIPTIONS.get(language, 'English')
-        chosen_speaker = speaker if speaker and speaker != 'classroom_teacher' else LANGUAGE_SPEAKERS.get(language, 'Rohit')
         return (
-            f'{chosen_speaker} speaks {language_name} clearly at a slightly fast natural pace. '
+            f'{chosen_speaker} speaks {language_name} clearly at a natural pace. '
             'The recording is very clear, close and without background noise.'
         )
 
@@ -324,7 +337,21 @@ class IndicParlerTTSAdapter:
                 del generation, prompt_inputs, decoder_attention_mask
         if not audio_chunks:
             raise RuntimeError('Indic Parler-TTS produced empty audio.')
-        return np.concatenate(audio_chunks).astype(np.float32), sampling_rate
+        full_waveform = np.concatenate(audio_chunks).astype(np.float32)
+        # Robust silence and waveform energy validation
+        abs_wav = np.abs(full_waveform)
+        peak = float(np.max(abs_wav)) if abs_wav.size else 0.0
+        rms = float(np.sqrt(np.mean(full_waveform**2))) if abs_wav.size else 0.0
+        near_zero_pct = float(np.mean(abs_wav < 1e-4) * 100.0) if abs_wav.size else 100.0
+        if peak < 0.03 or rms < 0.002 or near_zero_pct > 95.0:
+            logger.error(
+                '[TTS_SILENT_AUDIO] lang=%s speaker=%s peak=%.5f rms=%.5f near_zero=%.1f%%',
+                language, speaker, peak, rms, near_zero_pct,
+            )
+            raise RuntimeError(
+                f'TTS_SILENT_AUDIO: Generated waveform for {language} contained no usable speech (peak={peak:.4f}, rms={rms:.5f})'
+            )
+        return full_waveform, sampling_rate
 
     def synthesize_array(self, text: str, language: str, speaker: str = 'classroom_teacher') -> tuple[np.ndarray, int]:
         text = (text or '').strip()

@@ -222,8 +222,7 @@ def run_full_regression():
 
         # Poll preparations until both are READY
         t0 = time.perf_counter()
-        ready_count = 0
-        for _ in range(90):
+        for _ in range(240):
             time.sleep(1.0)
             res_poll = client.get(f"/api/v1/lessons/{lesson_id}/preparations", headers=t_headers)
             assert res_poll.status_code == 200
@@ -235,6 +234,8 @@ def run_full_regression():
             if len(ready_jobs) >= 2:
                 print(f"All audio jobs READY in {time.perf_counter() - t0:.1f}s")
                 break
+        else:
+            raise AssertionError(f"Timed out waiting for audio preparations. Current jobs: {jobs}")
 
         # 16. Publish Lesson
         print("\n[13] Publish Lesson")

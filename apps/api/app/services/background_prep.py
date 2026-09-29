@@ -138,7 +138,7 @@ def _run_tts(db: SessionLocal, job: PreparationJob, lesson: Lesson, version: Les
         ).first()
         if not translation or not translation.translated_text.strip():
             raise RuntimeError('The selected translation is no longer available; audio generation must be retried.')
-        usable = translation.verification_status == 'TEACHER_APPROVED' or (lang == 'sat_Olck' and translation.verification_status == 'TEMPORARY')
+        usable = translation.verification_status == 'TEACHER_APPROVED' or (lang in {'sat_Olck', 'mar_Deva'} and translation.verification_status == 'TEMPORARY')
         if not usable:
             raise RuntimeError('The selected translation is not yet usable for audio generation.')
         text = translation.translated_text.strip()
@@ -146,7 +146,7 @@ def _run_tts(db: SessionLocal, job: PreparationJob, lesson: Lesson, version: Les
     cache = STORAGE_ROOT / 'tts_cache'
     cache.mkdir(parents=True, exist_ok=True)
     speaker = 'classroom_teacher'
-    key = hashlib.sha256((text + '|' + lang + '|' + speaker + '|v6').encode('utf-8')).hexdigest()
+    key = hashlib.sha256((text + '|' + lang + '|' + speaker + '|v7').encode('utf-8')).hexdigest()
     path = cache / f'{key}.wav'
 
     if not path.exists() or path.stat().st_size == 0:
@@ -167,7 +167,7 @@ def _run_tts(db: SessionLocal, job: PreparationJob, lesson: Lesson, version: Les
         ).first()
         if not current_translation:
             raise RuntimeError('Audio became stale because the translation was removed. Retry audio generation.')
-        current_usable = current_translation.verification_status == 'TEACHER_APPROVED' or (lang == 'sat_Olck' and current_translation.verification_status == 'TEMPORARY')
+        current_usable = current_translation.verification_status == 'TEACHER_APPROVED' or (lang in {'sat_Olck', 'mar_Deva'} and current_translation.verification_status == 'TEMPORARY')
         if not current_usable or current_translation.translated_text.strip() != text:
             raise RuntimeError('Audio became stale because the usable text changed. Retry audio generation.')
 

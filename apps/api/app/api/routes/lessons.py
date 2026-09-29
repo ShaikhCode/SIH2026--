@@ -562,9 +562,9 @@ def translate(lesson_id: int, x: TranslateIn, db: Session = Depends(get_db), use
     row.confidence = validation['confidence']
     row.flags_json = json.dumps(validation['flags'], ensure_ascii=False)
     row.validation_json = json.dumps(validation, ensure_ascii=False)
-    row.verification_status = 'TEMPORARY' if x.target_language == 'sat_Olck' else 'UNVERIFIED'
+    row.verification_status = 'TEMPORARY' if x.target_language in {'sat_Olck', 'mar_Deva'} else 'UNVERIFIED'
     row.teacher_edited = False
-    row.native_review_status = 'NOT_REQUIRED' if x.target_language == 'sat_Olck' else 'NOT_REVIEWED'
+    row.native_review_status = 'NOT_REQUIRED' if x.target_language in {'sat_Olck', 'mar_Deva'} else 'NOT_REVIEWED'
     lesson.status = 'FLAGGED' if validation['flags'] else 'TRANSLATED'
     db.commit()
     db.refresh(row)
@@ -606,7 +606,7 @@ def verify_translation(lesson_id: int, x: VerifyIn, db: Session = Depends(get_db
     if x.native_review_status is not None:
         translation.native_review_status = x.native_review_status
 
-    translation.verification_status = ('TEMPORARY' if translation.target_language == 'sat_Olck' and x.approved else ('TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'))
+    translation.verification_status = ('TEMPORARY' if translation.target_language in {'sat_Olck', 'mar_Deva'} and x.approved else ('TEACHER_APPROVED' if x.approved else 'REVIEW_REQUIRED'))
     lesson.status = 'TEACHER_APPROVED' if x.approved else 'FLAGGED'
     db.commit()
     return {
@@ -629,8 +629,8 @@ def save_temporary_translation(lesson_id: int, translation_id: int, payload: dic
     translation = db.get(Translation, translation_id)
     if not translation or translation.lesson_version_id != version.id:
         raise HTTPException(404, detail={'code': 'TRANSLATION_NOT_FOUND', 'message': 'Translation not found.'})
-    if translation.target_language != 'sat_Olck':
-        raise HTTPException(400, detail={'code': 'TEMPORARY_LANGUAGE_REQUIRED', 'message': 'Temporary save is only available for Santali.'})
+    if translation.target_language not in {'sat_Olck', 'mar_Deva'}:
+        raise HTTPException(400, detail={'code': 'TEMPORARY_LANGUAGE_REQUIRED', 'message': 'Temporary save is only available for Santali and Marathi.'})
     text = str(payload.get('edited_text') or translation.translated_text or '').strip()
     if not text:
         raise HTTPException(400, detail={'code': 'TRANSLATION_EMPTY', 'message': 'Temporary translation cannot be empty.'})
@@ -708,7 +708,7 @@ def queue_tts_preparation(lesson_id: int, language: str, db: Session = Depends(g
         translation = db.query(Translation).filter_by(lesson_version_id=version.id, target_language=language).first()
         if not translation or not translation.translated_text.strip():
             raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'Prepare the language translation first.'})
-        if translation.verification_status != 'TEACHER_APPROVED' and not (language == 'sat_Olck' and translation.verification_status == 'TEMPORARY'):
+        if translation.verification_status != 'TEACHER_APPROVED' and not (language in {'sat_Olck', 'mar_Deva'} and translation.verification_status == 'TEMPORARY'):
             raise HTTPException(400, detail={'code': 'TTS_REVIEW_REQUIRED', 'message': 'Approve the translation before generating student-facing audio.'})
     job_id, status = enqueue_retry(version.id, 'tts', language)
     return {'job_id': job_id, 'status': status, 'kind': 'tts', 'language': language}
@@ -804,7 +804,7 @@ def tts(lesson_id: int, x: TTSIn, db: Session = Depends(get_db), user=Depends(cu
     else:
         if not translation:
             raise HTTPException(400, detail={'code': 'TTS_SOURCE_MISSING', 'message': 'Prepare this language translation before generating audio.'})
-        if translation.verification_status != 'TEACHER_APPROVED' and not (x.target_language == 'sat_Olck' and translation.verification_status == 'TEMPORARY'):
+        if translation.verification_status != 'TEACHER_APPROVED' and not (x.target_language in {'sat_Olck', 'mar_Deva'} and translation.verification_status == 'TEMPORARY'):
             raise HTTPException(400, detail={'code': 'TTS_REVIEW_REQUIRED', 'message': 'Approve the translation before generating student-facing audio.'})
         text = translation.translated_text
     if not text.strip():

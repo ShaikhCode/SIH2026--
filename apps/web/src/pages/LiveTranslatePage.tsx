@@ -79,8 +79,8 @@ function pcmFloatChunksToWav(chunks: Float32Array[], sampleRate: number) {
 
 export default function LiveTranslatePage() {
   const { push } = useToast();
-  const [source, setSource] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-source') as Lang) || 'eng_Latn');
-  const [target, setTarget] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-target') as Lang) || 'hin_Deva');
+  const [source, setSource] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-source') as Lang) || 'hin_Deva');
+  const [target, setTarget] = useState<Lang>(() => (localStorage.getItem('bhashasaathi:live-target') as Lang) || 'sat_Olck');
   const [status, setStatus] = useState<'idle' | 'warming' | 'ready' | 'listening' | 'stopping' | 'error'>('idle');
   const [statusText, setStatusText] = useState('Ready when you are.');
   const [transcript, setTranscript] = useState('');

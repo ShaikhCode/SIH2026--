@@ -44,7 +44,7 @@ export default function LoginPage() {
         <Field label="Password"><input autoComplete="current-password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
         <Button type="submit" disabled={busy} className="full">{busy ? 'Signing in…' : 'Sign in'}</Button>
       </form>
-      <div className="demo-box"><strong>Demo access</strong><span>Teacher: <b>teacher@bhashasaathi.local</b></span><span>Password: <b>Demo@1234</b></span></div>
+    {/*  <div className="demo-box"><strong>Demo access</strong><span>Teacher: <b>teacher@bhashasaathi.local</b></span><span>Password: <b>Demo@1234</b></span></div>*/}
       <div className="auth-switch"><span>New to BhashaSaathi?</span><button onClick={() => navigate('/register')}>Create your flexible account →</button></div>
       <div className="trust-note"><ShieldCheck size={16} /><span>No paid AI runtime dependency. Your local models stay on your machine.</span></div>
     </Card></section>
